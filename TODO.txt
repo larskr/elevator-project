@@ -4,3 +4,9 @@
 * TODO Reimplement elev.c in Go. 
 
 * TODO Create code skeleton for the elevator main program.
+
+
+https://golang.org/pkg/encoding/gob/
+https://golang.org/doc/code.html
+https://golang.org/doc/effective_go.html
+https://www.youtube.com/watch?v=QDDwwePbDtw
