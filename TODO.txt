@@ -1,0 +1,6 @@
+* TODO Modify network package to accept interface types and do proper
+  encoding/decoding with the gob package.  
+
+* TODO Reimplement elev.c in Go. 
+
+* TODO Create code skeleton for the elevator main program.
