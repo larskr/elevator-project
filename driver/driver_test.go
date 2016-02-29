@@ -6,10 +6,25 @@ import (
 	"os"
 )
 
+func readElevatorInput() {
+    i:= 0
+    for i<1 {
+        var k elev_button_type = 0
+        for j:=0; j<N_FLOORS; j++{
+	    for k=0;k<N_BUTTONS; k++{
+                fmt.Println("Floor " +j+ " Button" +k+ "\n")   
+            }
+	}    
+    }
+}
+
 func TestMain(m *testing.M) {
     Elev_init();
     fmt.Println("Press STOP button to stop elevator and exit program.\n");
-    Elev_set_motor_direction(DIRN_UP);
+    readElevatorInput()
+
+
+/*    Elev_set_motor_direction(DIRN_UP);
     i := 0
 
     for i<1 {
@@ -25,6 +40,6 @@ func TestMain(m *testing.M) {
             Elev_set_motor_direction(DIRN_STOP)
         }
     }
-
+*/
 	os.Exit(0)
 }
