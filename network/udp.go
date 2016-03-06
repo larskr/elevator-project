@@ -1,7 +1,10 @@
 package network
 
 import (
+	"fmt"
 	"net"
+	"errors"
+	"io"
 )
 
 const (
@@ -9,17 +12,34 @@ const (
 	UDP_PORT         = 2048
 )
 
-type Message struct {
-	From net.IP
-	To   net.IP
-	Data [MAX_MESSAGE_SIZE]byte
+type UDPMessage struct {
+	from uint32
+	to   uint32
+	data [MAX_MESSAGE_SIZE]byte
 }
+
+func (umsg *UDPMessage) Write(p []byte) (n int, err error) {
+	if len(p) > MAX_MESSAGE_SIZE {
+		n = 0
+		err = errors.New("Message data size is greater than MAX_MESSAGE_SIZE.")
+		return
+	}
+	n = copy(umsg.data[:], p)
+}
+
+func (umsg *UDPMessage) Read(p []byte) (n int, err error) {
+	if len(p) > MAX_MESSAGE_SIZE {
+		err = io.EOF
+	}
+	n = copy(p, umsg.data[:])
+}
+
+func (umsg *UDPMessage)
 
 type UDPService struct {
 	conn    *net.UDPConn
-	addr   net.UDPAddr
-	receive chan Message
-	send    chan Message
+	receivec chan *UDPMessage
+	sendc    chan *UDPMessage
 }
 
 func NewUDPService() (*UDPService, error) {
@@ -35,9 +55,8 @@ func NewUDPService() (*UDPService, error) {
 
 	s := &UDPService{
 		conn:    conn,
-		addr:    addr,
-		receive: make(chan Message),
-		send:    make(chan Message),
+		ReceiveC: make(chan *UDPMessage),
+		SendC:    make(chan *UDPMessage),
 	}
 
 	go s.receiveLoop()
@@ -46,6 +65,15 @@ func NewUDPService() (*UDPService, error) {
 	return s, nil
 }
 
+func (s *UDPService) Send(msg *UDPMessage) {
+	s.sendc <- msg
+}
+
+func (s *UDPService) Receive() *UDPMessage {
+	msg := <-s.receivec
+	return msg
+}
+	
 func (s *UDPService) receiveLoop() {
 	var buf [MAX_MESSAGE_SIZE]byte
 	for {
@@ -54,13 +82,15 @@ func (s *UDPService) receiveLoop() {
 			continue
 		}
 
-		msg := Message{
-			From: raddr.IP,
-			To:   s.addr.IP,
+		laddr := s.conn.LocalAddr().(*net.UDPAddr)
+		
+		msg := &UDPMessage{
+			from: IPToUint32(raddr.IP),
+			to:   IPToUint32(laddr.IP),
 		}
-		copy(msg.Data[:], buf[:])
+		copy(msg.data[:], buf[:])
 
-		s.receive <- msg
+		s.receivec <- msg
 
 		for i := range buf {
 			buf[i] = 0
@@ -70,12 +100,14 @@ func (s *UDPService) receiveLoop() {
 
 func (s *UDPService) sendLoop() {
 	for {
-		msg := <-s.send
+		msg := <-s.sendc
 		addr := net.UDPAddr{
-			IP:   msg.To,
+			IP:   Uint32ToIP(msg.to),
 			Port: UDP_PORT,
 		}
 
-		s.conn.WriteToUDP(msg.Data[:], &addr)
+		fmt.Println(addr)
+
+		s.conn.WriteToUDP(msg.data[:], &addr)
 	}
 }
