@@ -1,28 +1,28 @@
 package network
 
 import (
-	"bytes"
 	"encoding/binary"
-	"erros"
-	"io"
+	"fmt"
 	"math/rand"
 	"time"
 )
 
 const (
-	ALIVETIME           = 50 * time.Millisecond
-	KICKTIME            = 250 * time.Millisecond
-	BROADCASTTIME       = 500 * time.Millisecond
-	MSG_RESEND_INTERVAL = 200 * time.Millisecond
+	ALIVETIME            = 50 * time.Millisecond
+	KICKTIME             = 250 * time.Millisecond
+	BROADCASTTIME        = 500 * time.Millisecond
+	MSG_RESEND_INTERVAL  = 200 * time.Millisecond
+	KICK_RESEND_INTERVAL = 20 * time.Millisecond
+	LONELY_DELAY         = 100 * time.Millisecond
+	USER_RECV_DEADLINE   = time.Second
 )
 
 const (
-	MAX_RESENDERS      = 100
-	MAX_DATA_SIZE      = 240
 	BUFFERED_CHAN_SIZE = 32
+	MAX_DATA_SIZE      = 240
+	MAX_RESEND_COUNT   = 5
+	MAX_READ_COUNT     = 100
 )
-
-type Addr uint32
 
 // Message types. User-defined message types must be greater than 4.
 type MsgType uint32
@@ -37,6 +37,7 @@ const (
 
 // Direction to send message.
 type MsgDirection int
+
 const (
 	RIGHT MsgDirection = -1
 	LEFT  MsgDirection = 1
@@ -44,31 +45,15 @@ const (
 
 type Message struct {
 	ID        uint32
-	Type      uint32
+	Type      MsgType // sizeof(MsgType) = 4
 	ReadCount uint32
 	_         uint32 // padding
 	Data      [MAX_DATA_SIZE]byte
 }
 
-func (msg *Message) Write(p []byte) (n int, err error) {
-	if len(p) > MAX_DATA_SIZE {
-		n = 0
-		err = errors.New("Message data size is greater than MAX_DATA_SIZE.")
-		return
-	}
-	n = copy(msg.Data[:], p)
-}
-
-func (umsg *Message) Read(p []byte) (n int, err error) {
-	if len(p) > MAX_DATA_SIZE {
-		err = io.EOF
-	}
-	n = copy(p, msg.Data[:])
-}
-
 type HelloData struct {
-	possibleNewRight Addr
-	possibleNewRight Addr
+	possibleNewRight uint32
+	possibleNewLeft  uint32
 }
 
 type AddData struct {
@@ -77,8 +62,8 @@ type AddData struct {
 }
 
 type KickData struct {
-	deadNode   Addr
-	senderNode Addr
+	deadNode   uint32
+	senderNode uint32
 }
 
 type Resender struct {
@@ -92,10 +77,10 @@ type Resender struct {
 type NetworkNode struct {
 	connected bool
 
-	thisNode  Addr
-	leftNode  Addr
-	rightNode Addr
-	anyNode   Addr
+	thisNode  uint32
+	leftNode  uint32
+	rightNode uint32
+	anyNode   uint32
 
 	udp *UDPService
 
@@ -106,7 +91,7 @@ type NetworkNode struct {
 	msgsToSend    chan *Message
 	msgsToForward chan *Message
 
-	deadNodes *Queue
+	deadNodes *Queue // of type uint32
 
 	running bool
 	stopc   chan struct{}
@@ -115,17 +100,14 @@ type NetworkNode struct {
 	kickTimer      *time.Timer
 	broadcastTimer *time.Timer
 
-	resenders        [MAX_RESENDERS]*Resender
+	// Note: The map datatype in Go is not thread-safe. In this
+	// case access is controlled by the for/select loop in maintainNetwork.
+	resenders        map[uint32]*Resender
 	resenderTimedOut chan *Resender
 }
 
-func NewNode() *NetworkNode {
-	node := &NetworkNode{}
-	return node
-}
-
 func (node *NetworkNode) Start() {
-	if !running {
+	if !node.running {
 		var err error
 		node.udp, err = NewUDPService()
 		if err != nil {
@@ -142,8 +124,8 @@ func (node *NetworkNode) Start() {
 		node.kickTimer = time.NewTimer(KICKTIME)
 		node.broadcastTimer = time.NewTimer(BROADCASTTIME)
 
+		node.resenders = make(map[uint32]*Resender)
 		node.resenderTimedOut = make(chan *Resender, BUFFERED_CHAN_SIZE)
-		node.lastResenderIndex = -1
 
 		node.ReceiveMyMessage = make(chan *Message, BUFFERED_CHAN_SIZE)
 		node.ReceiveOtherMessage = make(chan *Message, BUFFERED_CHAN_SIZE)
@@ -152,6 +134,8 @@ func (node *NetworkNode) Start() {
 		node.msgsToForward = make(chan *Message, BUFFERED_CHAN_SIZE)
 
 		node.deadNodes = NewQueue()
+
+		node.stopc = make(chan struct{})
 
 		go node.maintainNetwork()
 		node.running = true
@@ -173,30 +157,32 @@ func (node *NetworkNode) Stop() {
 
 func (node *NetworkNode) ForwardMessage(msg *Message) {
 	if msg.Type < 5 {
-		return nil
+		return
 	}
 	node.msgsToForward <- msg
 }
 
 func (node *NetworkNode) SendMessage(msg *Message) {
 	if msg.Type < 5 {
-		return nil
+		return
 	}
 	node.msgsToSend <- msg
 }
 
-func (node *NetworkNode) Addr() Addr {
+func (node *NetworkNode) Addr() uint32 {
 	return node.thisNode
 }
 
-func (node *NetworkNode) GetDeadNodeAddr() {
+func (node *NetworkNode) GetDeadNodeAddr() uint32 {
+	return node.deadNodes.Pop().(uint32)
 }
 
 func (node *NetworkNode) maintainNetwork() {
-	var aliveTimer, kickTimer, broadcastTimer <-chan timer.Time
+	var aliveTimer, kickTimer, broadcastTimer <-chan time.Time
 	for {
 		node.updateConnected()
 
+		// Remember reading from nil channels in Go always blocks.
 		if node.connected {
 			aliveTimer = node.aliveTimer.C
 			kickTimer = node.kickTimer.C
@@ -208,8 +194,11 @@ func (node *NetworkNode) maintainNetwork() {
 		}
 
 		select {
-		case msg := <-udp.receivec:
-			node.processUDPMessage(msg)
+		case umsg := <-node.udp.receivec:
+			// Note: This must not block when sending user-defined
+			// message to the ReceiveMyMessage or ReceiveOtherMessage.
+			node.processUDPMessage(umsg)
+			fmt.Println(umsg)
 
 		case msg := <-node.msgsToForward:
 			node.forwardMsg(msg, RIGHT)
@@ -234,7 +223,7 @@ func (node *NetworkNode) maintainNetwork() {
 			}
 
 		case <-aliveTimer:
-			node.sendData(node.leftNode, ALIVE, nil)
+			node.sendData(node.leftNode, ALIVE, nil, 0)
 			node.aliveTimer.Reset(ALIVETIME)
 
 		case <-kickTimer:
@@ -244,43 +233,212 @@ func (node *NetworkNode) maintainNetwork() {
 			node.deadNodes.Add(node.rightNode)
 
 		case <-broadcastTimer:
-			node.sendData(node.anyNode, BROADCAST, nil)
+			node.sendData(node.anyNode, BROADCAST, nil, 0)
 			node.broadcastTimer.Reset(BROADCASTTIME)
 
 		case <-node.stopc:
 			node.running = false
+			for _, re := range node.resenders {
+				node.removeResender(re)
+			}
 			return
-		default:
-
 		}
 	}
 }
 
 func (node *NetworkNode) processUDPMessage(umsg *UDPMessage) {
+	msg := new(Message)
+	msg.ID = binary.BigEndian.Uint32(umsg.payload[:])
+	msg.Type = MsgType(binary.BigEndian.Uint32(umsg.payload[4:]))
+	msg.ReadCount = binary.BigEndian.Uint32(umsg.payload[8:])
+	copy(msg.Data[:], umsg.payload[16:])
 
+	if msg.ReadCount > MAX_READ_COUNT {
+		return
+	}
+	msg.ReadCount++
+
+	switch msg.Type {
+	case BROADCAST:
+		if umsg.from != node.thisNode {
+			var data [8]byte
+			var hd HelloData
+			hd.possibleNewLeft = node.thisNode
+			if node.connected {
+				hd.possibleNewRight = node.rightNode
+			} else {
+				hd.possibleNewRight = node.thisNode
+			}
+			binary.BigEndian.PutUint32(data[:], uint32(hd.possibleNewRight))
+			binary.BigEndian.PutUint32(data[4:], uint32(hd.possibleNewLeft))
+
+			if !node.connected {
+				time.Sleep(LONELY_DELAY)
+			}
+			node.sendData(umsg.from, HELLO, data[:], len(data))
+		}
+
+	case HELLO:
+		if !node.connected {
+			var hd HelloData
+			hd.possibleNewRight = binary.BigEndian.Uint32(msg.Data[:])
+			hd.possibleNewLeft = binary.BigEndian.Uint32(msg.Data[4:])
+
+			node.rightNode = hd.possibleNewRight
+			node.leftNode = hd.possibleNewLeft
+			node.updateConnected()
+
+			var data [8]byte
+			var ad AddData
+			if hd.possibleNewRight == hd.possibleNewLeft {
+				ad.asRight = 1
+				ad.asLeft = 1
+				binary.BigEndian.PutUint32(data[:], ad.asRight)
+				binary.BigEndian.PutUint32(data[4:], ad.asLeft)
+				node.sendData(node.leftNode, ADD, data[:], len(data))
+			} else {
+				ad.asRight = 0
+				ad.asLeft = 1
+				binary.BigEndian.PutUint32(data[:], ad.asRight)
+				binary.BigEndian.PutUint32(data[4:], ad.asLeft)
+				node.sendData(node.rightNode, ADD, data[:], len(data))
+
+				ad.asRight = 1
+				ad.asLeft = 0
+				binary.BigEndian.PutUint32(data[:], ad.asRight)
+				binary.BigEndian.PutUint32(data[4:], ad.asLeft)
+				node.sendData(node.leftNode, ADD, data[:], len(data))
+			}
+		}
+
+	case ADD:
+		var add AddData
+		add.asRight = binary.BigEndian.Uint32(msg.Data[:])
+		add.asLeft = binary.BigEndian.Uint32(msg.Data[4:])
+		if add.asRight == 1 {
+			node.rightNode = umsg.from
+		}
+		if add.asLeft == 1 {
+			node.leftNode = umsg.from
+		}
+		node.updateConnected()
+
+	case ALIVE:
+		if node.connected && umsg.from == node.rightNode {
+			node.kickTimer.Reset(KICKTIME)
+		}
+
+	case KICK:
+		if node.connected {
+			var kick KickData
+			kick.deadNode = binary.BigEndian.Uint32(msg.Data[:])
+			kick.senderNode = binary.BigEndian.Uint32(msg.Data[4:])
+
+			if re, ok := node.resenders[msg.ID]; ok {
+				node.rightNode = umsg.from
+				node.removeResender(re)
+				node.kickTimer.Reset(KICKTIME)
+			} else {
+				if kick.deadNode == node.leftNode {
+					node.leftNode = kick.senderNode
+				}
+				node.forwardMsg(msg, LEFT)
+				node.deadNodes.Add(kick.deadNode)
+			}
+		}
+	}
+
+	// User-defined message type
+	if msg.Type >= 5 {
+		if node.connected && umsg.from == node.leftNode {
+			var c chan *Message
+			if re, ok := node.resenders[msg.ID]; ok {
+				c = node.ReceiveMyMessage
+				node.removeResender(re)
+			} else {
+				c = node.ReceiveOtherMessage
+			}
+
+			// Do not block if the user doesn't process messages.
+			go func(c chan *Message, m *Message) {
+				timeOut := time.After(USER_RECV_DEADLINE)
+				for {
+					select {
+					case <-timeOut:
+						return
+					case c <- m:
+						return
+					}
+				}
+			}(c, msg)
+		}
+	}
 }
 
-func (node *NetworkNode) sendData(to Addr, typ uint32, data interface{}) {
+func (node *NetworkNode) createKickMsg() *Message {
+	msg := &Message{
+		ID:        rand.Uint32(),
+		Type:      KICK,
+		ReadCount: 0,
+	}
+
+	kd := KickData{
+		deadNode:   node.rightNode,
+		senderNode: node.thisNode,
+	}
+	binary.BigEndian.PutUint32(msg.Data[:], kd.deadNode)
+	binary.BigEndian.PutUint32(msg.Data[4:], kd.senderNode)
+
+	return msg
+}
+
+func (node *NetworkNode) addResender(msg *Message, resendInterval time.Duration) {
+	re := &Resender{
+		msg:       msg,
+		timer:     time.NewTimer(resendInterval),
+		triesLeft: MAX_RESEND_COUNT,
+		stopc:     make(chan struct{}),
+	}
+	node.resenders[msg.ID] = re
+
+	// Goroutine for sending resender to node.resenderTimedOut on time out.
+	// Remember to close re.stopc when removing a resender.
+	go func(n *NetworkNode, r *Resender) {
+		for {
+			select {
+			case <-r.stopc:
+				return
+			default:
+				<-r.timer.C
+				n.resenderTimedOut <- r
+			}
+		}
+	}(node, re)
+}
+
+func (node *NetworkNode) removeResender(re *Resender) {
+	// Stop forwarding goroutine.
+	close(re.stopc)
+	delete(node.resenders, re.msg.ID)
+}
+
+func (node *NetworkNode) sendData(to uint32, mtype MsgType, data []byte, size int) {
 	umsg := &UDPMessage{
 		to:   to,
 		from: node.thisNode,
 	}
 
-	msg := Message{
-		ID:        rand.Uint32(),
-		Type:      typ,
-		ReadCount: 0,
-	}
-
+	binary.BigEndian.PutUint32(umsg.payload[:], rand.Uint32())
+	binary.BigEndian.PutUint32(umsg.payload[4:], uint32(mtype))
 	if data != nil {
-		binary.Write(msg, binary.BigEndian, data)
+		copy(umsg.payload[16:], data[:size])
 	}
-	binary.Write(umsg, binary.BigEndian, &msg)
 
-	udp.Send(umsg)
+	fmt.Println(umsg)
+	node.udp.Send(umsg)
 }
 
-func (node *NetworkNode) forwardMsg(msg *Message, direction int) {
+func (node *NetworkNode) forwardMsg(msg *Message, direction MsgDirection) {
 	umsg := new(UDPMessage)
 	umsg.from = node.thisNode
 	if direction == RIGHT {
@@ -288,9 +446,13 @@ func (node *NetworkNode) forwardMsg(msg *Message, direction int) {
 	} else {
 		umsg.to = node.leftNode
 	}
-	binary.Write(umsg, binary.BigEndian, msg)
 
-	udp.Send(umsg)
+	binary.BigEndian.PutUint32(umsg.payload[:], msg.ID)
+	binary.BigEndian.PutUint32(umsg.payload[4:], uint32(msg.Type))
+	binary.BigEndian.PutUint32(umsg.payload[8:], msg.ReadCount)
+	copy(umsg.payload[16:], msg.Data[:])
+
+	node.udp.Send(umsg)
 }
 
 func (node *NetworkNode) updateConnected() {
@@ -298,6 +460,7 @@ func (node *NetworkNode) updateConnected() {
 		node.rightNode = 0
 		node.leftNode = 0
 		node.connected = false
+		node.broadcastTimer.Reset(BROADCASTTIME)
 	} else if !node.connected {
 		node.connected = true
 		node.aliveTimer.Reset(ALIVETIME)

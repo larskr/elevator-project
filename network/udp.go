@@ -1,50 +1,30 @@
 package network
 
 import (
-	"fmt"
 	"net"
-	"errors"
-	"io"
 )
 
 const (
-	MAX_MESSAGE_SIZE = 256
-	UDP_PORT         = 2048
+	MAX_PAYLOAD_SIZE       = 256
+	UDP_PORT               = 2048
+	UDP_BUFFERED_CHAN_SIZE = 32
 )
 
 type UDPMessage struct {
-	from uint32
-	to   uint32
-	data [MAX_MESSAGE_SIZE]byte
+	from    uint32
+	to      uint32
+	payload [MAX_PAYLOAD_SIZE]byte
 }
-
-func (umsg *UDPMessage) Write(p []byte) (n int, err error) {
-	if len(p) > MAX_MESSAGE_SIZE {
-		n = 0
-		err = errors.New("Message data size is greater than MAX_MESSAGE_SIZE.")
-		return
-	}
-	n = copy(umsg.data[:], p)
-}
-
-func (umsg *UDPMessage) Read(p []byte) (n int, err error) {
-	if len(p) > MAX_MESSAGE_SIZE {
-		err = io.EOF
-	}
-	n = copy(p, umsg.data[:])
-}
-
-func (umsg *UDPMessage)
 
 type UDPService struct {
-	conn    *net.UDPConn
+	conn     *net.UDPConn
 	receivec chan *UDPMessage
 	sendc    chan *UDPMessage
 }
 
 func NewUDPService() (*UDPService, error) {
 	addr := net.UDPAddr{
-		IP:   net.ParseIP("192.168.1.13"),
+		IP:   Uint32ToIP(NetworkAddr()),
 		Port: UDP_PORT,
 	}
 
@@ -54,9 +34,9 @@ func NewUDPService() (*UDPService, error) {
 	}
 
 	s := &UDPService{
-		conn:    conn,
-		ReceiveC: make(chan *UDPMessage),
-		SendC:    make(chan *UDPMessage),
+		conn:     conn,
+		receivec: make(chan *UDPMessage, UDP_BUFFERED_CHAN_SIZE),
+		sendc:    make(chan *UDPMessage, UDP_BUFFERED_CHAN_SIZE),
 	}
 
 	go s.receiveLoop()
@@ -73,9 +53,9 @@ func (s *UDPService) Receive() *UDPMessage {
 	msg := <-s.receivec
 	return msg
 }
-	
+
 func (s *UDPService) receiveLoop() {
-	var buf [MAX_MESSAGE_SIZE]byte
+	var buf [MAX_PAYLOAD_SIZE]byte
 	for {
 		n, raddr, err := s.conn.ReadFromUDP(buf[:])
 		if n == 0 || err != nil {
@@ -83,12 +63,12 @@ func (s *UDPService) receiveLoop() {
 		}
 
 		laddr := s.conn.LocalAddr().(*net.UDPAddr)
-		
+
 		msg := &UDPMessage{
 			from: IPToUint32(raddr.IP),
 			to:   IPToUint32(laddr.IP),
 		}
-		copy(msg.data[:], buf[:])
+		copy(msg.payload[:], buf[:])
 
 		s.receivec <- msg
 
@@ -106,8 +86,6 @@ func (s *UDPService) sendLoop() {
 			Port: UDP_PORT,
 		}
 
-		fmt.Println(addr)
-
-		s.conn.WriteToUDP(msg.data[:], &addr)
+		s.conn.WriteToUDP(msg.payload[:], &addr)
 	}
 }
