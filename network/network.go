@@ -10,7 +10,7 @@ import (
 const (
 	ALIVETIME            = 50 * time.Millisecond
 	KICKTIME             = 250 * time.Millisecond
-	BROADCASTTIME        = 500 * time.Millisecond
+	BROADCASTTIME        = 5000 * time.Millisecond
 	MSG_RESEND_INTERVAL  = 200 * time.Millisecond
 	KICK_RESEND_INTERVAL = 20 * time.Millisecond
 	LONELY_DELAY         = 100 * time.Millisecond
@@ -111,6 +111,7 @@ func (node *NetworkNode) Start() {
 		var err error
 		node.udp, err = NewUDPService()
 		if err != nil {
+			fmt.Println(err)
 			return
 		}
 
@@ -197,8 +198,10 @@ func (node *NetworkNode) maintainNetwork() {
 		case umsg := <-node.udp.receivec:
 			// Note: This must not block when sending user-defined
 			// message to the ReceiveMyMessage or ReceiveOtherMessage.
+			if umsg.from != node.thisNode {
+				fmt.Println(umsg)
+			}
 			node.processUDPMessage(umsg)
-			fmt.Println(umsg)
 
 		case msg := <-node.msgsToForward:
 			node.forwardMsg(msg, RIGHT)
@@ -452,6 +455,7 @@ func (node *NetworkNode) forwardMsg(msg *Message, direction MsgDirection) {
 	binary.BigEndian.PutUint32(umsg.payload[8:], msg.ReadCount)
 	copy(umsg.payload[16:], msg.Data[:])
 
+	fmt.Println(umsg)
 	node.udp.Send(umsg)
 }
 
@@ -460,7 +464,7 @@ func (node *NetworkNode) updateConnected() {
 		node.rightNode = 0
 		node.leftNode = 0
 		node.connected = false
-		node.broadcastTimer.Reset(BROADCASTTIME)
+		//node.broadcastTimer.Reset(BROADCASTTIME)
 	} else if !node.connected {
 		node.connected = true
 		node.aliveTimer.Reset(ALIVETIME)
