@@ -2,7 +2,6 @@ package network
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math/rand"
 	"time"
 )
@@ -25,14 +24,12 @@ const (
 )
 
 // Message types. User-defined message types must be greater than 4.
-type MsgType uint32
-
 const (
-	BROADCAST MsgType = 0x0
-	HELLO     MsgType = 0x1
-	ADD       MsgType = 0x2
-	KICK      MsgType = 0x3
-	ALIVE     MsgType = 0x4
+	BROADCAST  = 0x0
+	HELLO      = 0x1
+	ADD        = 0x2
+	KICK       = 0x3
+	ALIVE      = 0x4
 )
 
 // Direction to send message.
@@ -45,7 +42,7 @@ const (
 
 type Message struct {
 	ID        uint32
-	Type      MsgType // sizeof(MsgType) = 4
+	Type      uint32
 	ReadCount uint32
 	_         uint32 // padding
 	Data      [MAX_DATA_SIZE]byte
@@ -106,19 +103,18 @@ type NetworkNode struct {
 	resenderTimedOut chan uint32
 }
 
-func (node *NetworkNode) Start() {
+func (node *NetworkNode) Start() error {
 	if !node.running {
 		var err error
 		node.udp, err = NewUDPService()
 		if err != nil {
-			fmt.Println(err)
-			return
+			return err
 		}
 
 		node.thisNode = NetworkAddr()
 		node.anyNode = BroadcastAddr()
 		if node.thisNode == 0 && node.anyNode == 0 {
-			return
+			return nil
 		}
 
 		node.aliveTimer = NewSafeTimer(ALIVETIME)
@@ -141,6 +137,7 @@ func (node *NetworkNode) Start() {
 		go node.maintainNetwork()
 		node.running = true
 	}
+	return nil
 }
 
 func (node *NetworkNode) IsRunning() bool {
@@ -186,9 +183,6 @@ func (node *NetworkNode) maintainNetwork() {
 		case umsg := <-node.udp.receivec:
 			// Note: This must not block when sending user-defined
 			// message to the ReceiveMyMessage or ReceiveOtherMessage.
-			if umsg.from != node.thisNode {
-				fmt.Println(umsg)
-			}
 			node.processUDPMessage(umsg)
 
 		case msg := <-node.msgsToForward:
@@ -251,7 +245,7 @@ func (node *NetworkNode) maintainNetwork() {
 func (node *NetworkNode) processUDPMessage(umsg *UDPMessage) {
 	msg := new(Message)
 	msg.ID = binary.BigEndian.Uint32(umsg.payload[:])
-	msg.Type = MsgType(binary.BigEndian.Uint32(umsg.payload[4:]))
+	msg.Type = binary.BigEndian.Uint32(umsg.payload[4:])
 	msg.ReadCount = binary.BigEndian.Uint32(umsg.payload[8:])
 	copy(msg.Data[:], umsg.payload[16:])
 	
@@ -430,7 +424,7 @@ func (node *NetworkNode) removeResender(re *Resender) {
 	delete(node.resenders, re.msg.ID)
 }
 
-func (node *NetworkNode) sendData(to uint32, mtype MsgType, data []byte, size int) {
+func (node *NetworkNode) sendData(to uint32, mtype uint32, data []byte, size int) {
 	umsg := &UDPMessage{
 		to:   to,
 		from: node.thisNode,
@@ -442,7 +436,6 @@ func (node *NetworkNode) sendData(to uint32, mtype MsgType, data []byte, size in
 		copy(umsg.payload[16:], data[:size])
 	}
 
-	fmt.Println(umsg)
 	node.udp.Send(umsg)
 }
 
@@ -468,7 +461,7 @@ func (node *NetworkNode) updateConnected() {
 		node.rightNode = 0
 		node.leftNode = 0
 		node.connected = false
-		//node.broadcastTimer.SafeReset(BROADCASTTIME)
+		node.broadcastTimer.SafeReset(BROADCASTTIME)
 	} else if !node.connected {
 		node.connected = true
 		node.aliveTimer.SafeReset(ALIVETIME)

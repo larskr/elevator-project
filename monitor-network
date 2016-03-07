@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+
+interface="en0"
+
+if [ $# -gt 0 ] && [ "$1" = "-i" ]
+then
+    interface = $2
+fi
+
+tcpdump -i $interface udp port 2048 -n -l -vv -X | gawk -f monitor-network.awk

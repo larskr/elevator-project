@@ -37,7 +37,7 @@ func (m *UDPMessage) String() string {
 
 	msg := new(Message)
 	msg.ID = binary.BigEndian.Uint32(m.payload[:])
-	msg.Type = MsgType(binary.BigEndian.Uint32(m.payload[4:]))
+	msg.Type = binary.BigEndian.Uint32(m.payload[4:])
 	msg.ReadCount = binary.BigEndian.Uint32(m.payload[8:])
 	copy(msg.Data[:], m.payload[16:])
 
