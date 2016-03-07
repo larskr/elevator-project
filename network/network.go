@@ -8,12 +8,12 @@ import (
 )
 
 const (
-	ALIVETIME            = 50 * time.Millisecond
-	KICKTIME             = 250 * time.Millisecond
+	ALIVETIME            = 500 * time.Millisecond
+	KICKTIME             = 2500 * time.Millisecond
 	BROADCASTTIME        = 5000 * time.Millisecond
-	MSG_RESEND_INTERVAL  = 200 * time.Millisecond
-	KICK_RESEND_INTERVAL = 20 * time.Millisecond
-	LONELY_DELAY         = 100 * time.Millisecond
+	MSG_RESEND_INTERVAL  = 2000 * time.Millisecond
+	KICK_RESEND_INTERVAL = 200 * time.Millisecond
+	LONELY_DELAY         = 1000 * time.Millisecond
 	USER_RECV_DEADLINE   = time.Second
 )
 
@@ -68,7 +68,7 @@ type KickData struct {
 
 type Resender struct {
 	msg            *Message
-	timer          *time.Timer
+	timer          *SafeTimer
 	resendInterval time.Duration
 	triesLeft      int
 	stopc          chan struct{}
@@ -96,14 +96,14 @@ type NetworkNode struct {
 	running bool
 	stopc   chan struct{}
 
-	aliveTimer     *time.Timer
-	kickTimer      *time.Timer
-	broadcastTimer *time.Timer
+	aliveTimer     *SafeTimer
+	kickTimer      *SafeTimer
+	broadcastTimer *SafeTimer
 
 	// Note: The map datatype in Go is not thread-safe. In this
 	// case access is controlled by the for/select loop in maintainNetwork.
 	resenders        map[uint32]*Resender
-	resenderTimedOut chan *Resender
+	resenderTimedOut chan uint32
 }
 
 func (node *NetworkNode) Start() {
@@ -121,12 +121,12 @@ func (node *NetworkNode) Start() {
 			return
 		}
 
-		node.aliveTimer = time.NewTimer(ALIVETIME)
-		node.kickTimer = time.NewTimer(KICKTIME)
-		node.broadcastTimer = time.NewTimer(BROADCASTTIME)
+		node.aliveTimer = NewSafeTimer(ALIVETIME)
+		node.kickTimer = NewSafeTimer(KICKTIME)
+		node.broadcastTimer = NewSafeTimer(BROADCASTTIME)
 
 		node.resenders = make(map[uint32]*Resender)
-		node.resenderTimedOut = make(chan *Resender, BUFFERED_CHAN_SIZE)
+		node.resenderTimedOut = make(chan uint32, BUFFERED_CHAN_SIZE)
 
 		node.ReceiveMyMessage = make(chan *Message, BUFFERED_CHAN_SIZE)
 		node.ReceiveOtherMessage = make(chan *Message, BUFFERED_CHAN_SIZE)
@@ -179,20 +179,8 @@ func (node *NetworkNode) GetDeadNodeAddr() uint32 {
 }
 
 func (node *NetworkNode) maintainNetwork() {
-	var aliveTimer, kickTimer, broadcastTimer <-chan time.Time
 	for {
 		node.updateConnected()
-
-		// Remember reading from nil channels in Go always blocks.
-		if node.connected {
-			aliveTimer = node.aliveTimer.C
-			kickTimer = node.kickTimer.C
-			broadcastTimer = nil
-		} else {
-			aliveTimer = nil
-			kickTimer = nil
-			broadcastTimer = node.broadcastTimer.C
-		}
 
 		select {
 		case umsg := <-node.udp.receivec:
@@ -209,35 +197,46 @@ func (node *NetworkNode) maintainNetwork() {
 		case msg := <-node.msgsToSend:
 			node.addResender(msg, MSG_RESEND_INTERVAL)
 
-		case re := <-node.resenderTimedOut:
-			if re.triesLeft > 0 {
-				if re.msg.Type == KICK {
-					node.forwardMsg(re.msg, LEFT)
+		case ID := <-node.resenderTimedOut:
+			if re, ok := node.resenders[ID]; ok {
+				if re.triesLeft > 0 {
+					if re.msg.Type == KICK {
+						node.forwardMsg(re.msg, LEFT)
+					} else {
+						node.forwardMsg(re.msg, RIGHT)
+					}
+					re.triesLeft--
+					re.timer.SafeReset(re.resendInterval)
 				} else {
-					node.forwardMsg(re.msg, RIGHT)
+					node.removeResender(re)
+					node.leftNode = 0
+					node.rightNode = 0
+					node.updateConnected()
 				}
-				re.triesLeft--
-				re.timer.Reset(re.resendInterval)
-			} else {
-				node.removeResender(re)
-				node.leftNode = 0
-				node.rightNode = 0
-				node.updateConnected()
 			}
 
-		case <-aliveTimer:
-			node.sendData(node.leftNode, ALIVE, nil, 0)
-			node.aliveTimer.Reset(ALIVETIME)
-
-		case <-kickTimer:
-			kickMsg := node.createKickMsg()
-			node.addResender(kickMsg, KICK_RESEND_INTERVAL)
-			node.kickTimer.Reset(KICKTIME)
-			node.deadNodes.Add(node.rightNode)
-
-		case <-broadcastTimer:
-			node.sendData(node.anyNode, BROADCAST, nil, 0)
-			node.broadcastTimer.Reset(BROADCASTTIME)
+		case <-node.aliveTimer.C:
+			node.aliveTimer.Seen()
+			if node.connected {
+				node.sendData(node.leftNode, ALIVE, nil, 0)
+				node.aliveTimer.SafeReset(ALIVETIME)
+			}
+		
+		case <-node.kickTimer.C:
+			node.kickTimer.Seen()
+			if node.connected {
+				kickMsg := node.createKickMsg()
+				node.addResender(kickMsg, KICK_RESEND_INTERVAL)
+				node.kickTimer.SafeReset(KICKTIME)
+				node.deadNodes.Add(node.rightNode)
+			}
+			
+		case <-node.broadcastTimer.C:
+			node.broadcastTimer.Seen()
+			if !node.connected {
+				node.sendData(node.anyNode, BROADCAST, nil, 0)
+				node.broadcastTimer.SafeReset(BROADCASTTIME)
+			}
 
 		case <-node.stopc:
 			node.running = false
@@ -255,7 +254,7 @@ func (node *NetworkNode) processUDPMessage(umsg *UDPMessage) {
 	msg.Type = MsgType(binary.BigEndian.Uint32(umsg.payload[4:]))
 	msg.ReadCount = binary.BigEndian.Uint32(umsg.payload[8:])
 	copy(msg.Data[:], umsg.payload[16:])
-
+	
 	if msg.ReadCount > MAX_READ_COUNT {
 		return
 	}
@@ -328,7 +327,7 @@ func (node *NetworkNode) processUDPMessage(umsg *UDPMessage) {
 
 	case ALIVE:
 		if node.connected && umsg.from == node.rightNode {
-			node.kickTimer.Reset(KICKTIME)
+			node.kickTimer.SafeReset(KICKTIME)
 		}
 
 	case KICK:
@@ -340,7 +339,7 @@ func (node *NetworkNode) processUDPMessage(umsg *UDPMessage) {
 			if re, ok := node.resenders[msg.ID]; ok {
 				node.rightNode = umsg.from
 				node.removeResender(re)
-				node.kickTimer.Reset(KICKTIME)
+				node.kickTimer.SafeReset(KICKTIME)
 			} else {
 				if kick.deadNode == node.leftNode {
 					node.leftNode = kick.senderNode
@@ -398,7 +397,7 @@ func (node *NetworkNode) createKickMsg() *Message {
 func (node *NetworkNode) addResender(msg *Message, resendInterval time.Duration) {
 	re := &Resender{
 		msg:       msg,
-		timer:     time.NewTimer(resendInterval),
+		timer:     NewSafeTimer(resendInterval),
 		triesLeft: MAX_RESEND_COUNT,
 		stopc:     make(chan struct{}),
 	}
@@ -406,17 +405,23 @@ func (node *NetworkNode) addResender(msg *Message, resendInterval time.Duration)
 
 	// Goroutine for sending resender to node.resenderTimedOut on time out.
 	// Remember to close re.stopc when removing a resender.
-	go func(n *NetworkNode, r *Resender) {
+	//
+	// Potential race: this goroutine has a pointer to a resender after it may
+	// have been removed. This may result in a second call to removeResender
+	// trying to close a closed channel.
+	//
+	// Solution: send msg.ID instead and let the receiver lookup the resender.
+	go func(n *NetworkNode, msg *Message) {
 		for {
 			select {
-			case <-r.stopc:
+			case <-re.stopc:
 				return
-			default:
-				<-r.timer.C
-				n.resenderTimedOut <- r
+			case <-re.timer.C:
+				re.timer.Seen()
+				n.resenderTimedOut <- msg.ID
 			}
 		}
-	}(node, re)
+	}(node, msg)
 }
 
 func (node *NetworkNode) removeResender(re *Resender) {
@@ -455,7 +460,6 @@ func (node *NetworkNode) forwardMsg(msg *Message, direction MsgDirection) {
 	binary.BigEndian.PutUint32(umsg.payload[8:], msg.ReadCount)
 	copy(umsg.payload[16:], msg.Data[:])
 
-	fmt.Println(umsg)
 	node.udp.Send(umsg)
 }
 
@@ -464,10 +468,10 @@ func (node *NetworkNode) updateConnected() {
 		node.rightNode = 0
 		node.leftNode = 0
 		node.connected = false
-		//node.broadcastTimer.Reset(BROADCASTTIME)
+		//node.broadcastTimer.SafeReset(BROADCASTTIME)
 	} else if !node.connected {
 		node.connected = true
-		node.aliveTimer.Reset(ALIVETIME)
-		node.kickTimer.Reset(KICKTIME)
+		node.aliveTimer.SafeReset(ALIVETIME)
+		node.kickTimer.SafeReset(KICKTIME)
 	}
 }
