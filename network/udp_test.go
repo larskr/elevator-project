@@ -13,10 +13,7 @@ func TestMain(m *testing.M) {
 
 	fmt.Println(node.IsConnected())
 	
-	for {
-//		m := <- node.udp.receivec
-//		fmt.Println(m)
-	}
+	select{}
 
 	os.Exit(0)
 }
