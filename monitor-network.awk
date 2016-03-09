@@ -7,7 +7,7 @@ BEGIN {
 	types[0] = "BROADCAST"; types[1] = "HELLO"; types[2] = "ADD";
 	types[3] = "KICK"; types[4] = "ALIVE";
 
-	next_color = 4;
+	next_color = 3;
 }
 
 function hex_read_byte(str, pos) {
@@ -44,6 +44,10 @@ function sprintf_data(type, data) {
 		as_right = hex_read_uint32(data, 1);
 		as_left = hex_read_uint32(data, 9);
 		return sprintf("(as_right %d, as_left %d)", as_right, as_left);
+	} else if (type == 3) {
+		dead = color_ip(hex_read_ipaddr(data, 1));
+		sender = color_ip(hex_read_ipaddr(data, 9));
+		return sprintf("(dead %s, sender %s)", dead, sender);
 	}
 	return "";
 }

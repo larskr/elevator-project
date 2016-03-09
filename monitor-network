@@ -1,10 +1,38 @@
 #!/usr/bin/env sh
 
-interface="en0"
+interface=""
+read_file=""
+write_file=""
 
-if [ $# -gt 0 ] && [ "$1" = "-i" ]
+if [ $# -eq 0 ]
 then
-    interface = $2
+    echo "Usage: ./monitor-network -i <interface> [-w <file>|-r <file>]";
+    exit 1;
+fi
+    
+
+while [ $# -gt 0 ]; do
+    case $1
+    in
+	-i) interface=$2;;
+	-r) read_file=$2;;
+	-w) write_file=$2;;
+    esac
+    shift
+    shift
+done
+
+if [ "$read_file" != "" ] && [ "$write_file" != "" ]; then
+    echo "Cannot write file and read at the same time.";
+    exit 1;
 fi
 
-tcpdump -i $interface udp port 2048 -n -l -vv -X | gawk -f monitor-network.awk
+if [ "$read_file" != "" ]; then
+    options="-r $read_file";
+elif [ "$write_file" != "" ]; then
+    options="-w $write_file";
+else
+    options="";
+fi
+
+tcpdump -i $interface udp port 2048 -n -l -vv -X $options | gawk -f monitor-network.awk;
