@@ -2,6 +2,7 @@ package network
 
 import (
 	"encoding/binary"
+	"io"
 	"math/rand"
 	"time"
 )
@@ -13,7 +14,6 @@ const (
 	MSG_RESEND_INTERVAL  = 2000 * time.Millisecond
 	KICK_RESEND_INTERVAL = 200 * time.Millisecond
 	LONELY_DELAY         = 1000 * time.Millisecond
-	USER_RECV_DEADLINE   = time.Second
 )
 
 const (
@@ -25,11 +25,11 @@ const (
 
 // Message types. User-defined message types must be greater than 4.
 const (
-	BROADCAST  = 0x0
-	HELLO      = 0x1
-	ADD        = 0x2
-	KICK       = 0x3
-	ALIVE      = 0x4
+	BROADCAST = 0x0
+	HELLO     = 0x1
+	ADD       = 0x2
+	KICK      = 0x3
+	ALIVE     = 0x4
 )
 
 // Direction to send message.
@@ -46,6 +46,14 @@ type Message struct {
 	ReadCount uint32
 	_         uint32 // padding
 	Data      [MAX_DATA_SIZE]byte
+}
+
+func NewMessage(mtype uint32, data EncoderDecoder) *Message {
+	msg := &Message{ID: rand.Uint32(), Type: mtype}
+	if data != nil {
+		data.Encode(msg.Data[:])
+	}
+	return msg
 }
 
 type HelloData struct {
@@ -71,7 +79,7 @@ type Resender struct {
 	stopc          chan struct{}
 }
 
-type NetworkNode struct {
+type Node struct {
 	connected bool
 
 	thisNode  uint32
@@ -81,14 +89,12 @@ type NetworkNode struct {
 
 	udp *UDPService
 
-	// Channels to receive user-defined messages.
-	ReceiveMyMessage    chan *Message
-	ReceiveOtherMessage chan *Message
+	msgsFromUserToUser  chan *Message
+	msgsFromUserToOther chan *Message
+	msgsToSend          chan *Message
+	msgsToForward       chan *Message
 
-	msgsToSend    chan *Message
-	msgsToForward chan *Message
-
-	deadNodes *Queue // of type uint32
+	deadNodes chan uint32
 
 	running bool
 	stopc   chan struct{}
@@ -103,152 +109,163 @@ type NetworkNode struct {
 	resenderTimedOut chan uint32
 }
 
-func (node *NetworkNode) Start() error {
-	if !node.running {
+func (n *Node) Start() error {
+	if !n.running {
 		var err error
-		node.udp, err = NewUDPService()
+		n.udp, err = NewUDPService()
 		if err != nil {
 			return err
 		}
 
-		node.thisNode = NetworkAddr()
-		node.anyNode = BroadcastAddr()
-		if node.thisNode == 0 && node.anyNode == 0 {
+		n.thisNode = NetworkAddr()
+		n.anyNode = BroadcastAddr()
+		if n.thisNode == 0 && n.anyNode == 0 {
 			return nil
 		}
 
-		node.aliveTimer = NewSafeTimer(ALIVETIME)
-		node.kickTimer = NewSafeTimer(KICKTIME)
-		node.broadcastTimer = NewSafeTimer(BROADCASTTIME)
+		n.aliveTimer = NewSafeTimer(ALIVETIME)
+		n.kickTimer = NewSafeTimer(KICKTIME)
+		n.broadcastTimer = NewSafeTimer(BROADCASTTIME)
 
-		node.resenders = make(map[uint32]*Resender)
-		node.resenderTimedOut = make(chan uint32, BUFFERED_CHAN_SIZE)
+		n.resenders = make(map[uint32]*Resender)
+		n.resenderTimedOut = make(chan uint32, BUFFERED_CHAN_SIZE)
 
-		node.ReceiveMyMessage = make(chan *Message, BUFFERED_CHAN_SIZE)
-		node.ReceiveOtherMessage = make(chan *Message, BUFFERED_CHAN_SIZE)
+		n.msgsFromUserToUser = make(chan *Message, BUFFERED_CHAN_SIZE)
+		n.msgsFromUserToOther = make(chan *Message, BUFFERED_CHAN_SIZE)
 
-		node.msgsToSend = make(chan *Message, BUFFERED_CHAN_SIZE)
-		node.msgsToForward = make(chan *Message, BUFFERED_CHAN_SIZE)
+		n.msgsToSend = make(chan *Message, BUFFERED_CHAN_SIZE)
+		n.msgsToForward = make(chan *Message, BUFFERED_CHAN_SIZE)
 
-		node.deadNodes = NewQueue()
+		n.deadNodes = make(chan uint32, BUFFERED_CHAN_SIZE)
 
-		node.stopc = make(chan struct{})
+		n.stopc = make(chan struct{})
 
-		go node.maintainNetwork()
-		node.running = true
+		go n.maintainNetwork()
+		n.running = true
 	}
 	return nil
 }
 
-func (node *NetworkNode) IsRunning() bool {
-	return node.running
+func (n *Node) IsRunning() bool {
+	return n.running
 }
 
-func (node *NetworkNode) IsConnected() bool {
-	return node.connected
+func (n *Node) IsConnected() bool {
+	return n.connected
 }
 
-func (node *NetworkNode) Stop() {
-	close(node.stopc)
-	node.running = false
+func (n *Node) Stop() {
+	close(n.stopc)
+	n.running = false
 }
 
-func (node *NetworkNode) ForwardMessage(msg *Message) {
+func (n *Node) ReceiveMyMessage() *Message {
+	return <-n.msgsFromUserToUser
+}
+
+func (n *Node) ReceiveMessage() *Message {
+	return <-n.msgsFromUserToUser
+}
+
+func (n *Node) ForwardMessage(msg *Message) {
 	if msg.Type < 5 {
 		return
 	}
-	node.msgsToForward <- msg
+	n.msgsToForward <- msg
 }
 
-func (node *NetworkNode) SendMessage(msg *Message) {
+func (n *Node) SendMessage(msg *Message) {
 	if msg.Type < 5 {
 		return
 	}
-	node.msgsToSend <- msg
+	n.msgsToSend <- msg
 }
 
-func (node *NetworkNode) Addr() uint32 {
-	return node.thisNode
+func (n *Node) Addr() uint32 {
+	return n.thisNode
 }
 
-func (node *NetworkNode) GetDeadNodeAddr() uint32 {
-	return node.deadNodes.Pop().(uint32)
+func (n *Node) GetDeadNodeAddr() uint32 {
+	return <-n.deadNodes
 }
 
-func (node *NetworkNode) maintainNetwork() {
+func (n *Node) maintainNetwork() {
 	for {
-		node.updateConnected()
+		n.updateConnected()
 
 		select {
-		case umsg := <-node.udp.receivec:
+		case umsg := <-n.udp.receivec:
 			// Note: This must not block when sending user-defined
-			// message to the ReceiveMyMessage or ReceiveOtherMessage.
-			node.processUDPMessage(umsg)
+			// message to the msgsFromUserToUser or msgsFromUserToOther.
+			n.processUDPMessage(umsg)
 
-		case msg := <-node.msgsToForward:
-			node.forwardMsg(msg, RIGHT)
+		case msg := <-n.msgsToForward:
+			n.forwardMsg(msg, RIGHT)
 
-		case msg := <-node.msgsToSend:
-			node.addResender(msg, MSG_RESEND_INTERVAL)
+		case msg := <-n.msgsToSend:
+			n.addResender(msg, MSG_RESEND_INTERVAL)
 
-		case ID := <-node.resenderTimedOut:
-			if re, ok := node.resenders[ID]; ok {
+		case ID := <-n.resenderTimedOut:
+			if re, ok := n.resenders[ID]; ok {
 				if re.triesLeft > 0 {
 					if re.msg.Type == KICK {
-						node.forwardMsg(re.msg, LEFT)
+						n.forwardMsg(re.msg, LEFT)
 					} else {
-						node.forwardMsg(re.msg, RIGHT)
+						n.forwardMsg(re.msg, RIGHT)
 					}
 					re.triesLeft--
 					re.timer.SafeReset(re.resendInterval)
 				} else {
-					node.removeResender(re)
-					node.leftNode = 0
-					node.rightNode = 0
-					node.updateConnected()
+					n.removeResender(re)
+					n.leftNode = 0
+					n.rightNode = 0
+					n.updateConnected()
 				}
 			}
 
-		case <-node.aliveTimer.C:
-			node.aliveTimer.Seen()
-			if node.connected {
-				node.sendData(node.leftNode, ALIVE, nil, 0)
-				node.aliveTimer.SafeReset(ALIVETIME)
-			}
-		
-		case <-node.kickTimer.C:
-			node.kickTimer.Seen()
-			if node.connected {
-				kickMsg := node.createKickMsg()
-				node.addResender(kickMsg, KICK_RESEND_INTERVAL)
-				node.kickTimer.SafeReset(KICKTIME)
-				node.deadNodes.Add(node.rightNode)
-			}
-			
-		case <-node.broadcastTimer.C:
-			node.broadcastTimer.Seen()
-			if !node.connected {
-				node.sendData(node.anyNode, BROADCAST, nil, 0)
-				node.broadcastTimer.SafeReset(BROADCASTTIME)
+		case <-n.aliveTimer.C:
+			n.aliveTimer.Seen()
+			if n.connected {
+				n.sendData(n.leftNode, ALIVE, nil)
+				n.aliveTimer.SafeReset(ALIVETIME)
 			}
 
-		case <-node.stopc:
-			node.running = false
-			for _, re := range node.resenders {
-				node.removeResender(re)
+		case <-n.kickTimer.C:
+			n.kickTimer.Seen()
+			if n.connected {
+				kickMsg := NewMessage(KICK, &KickData{
+					deadNode:   n.rightNode,
+					senderNode: n.thisNode,
+				})
+				n.addResender(kickMsg, KICK_RESEND_INTERVAL)
+				n.kickTimer.SafeReset(KICKTIME)
+				select {
+				case n.deadNodes <- n.rightNode:
+				default:
+				}
+			}
+
+		case <-n.broadcastTimer.C:
+			n.broadcastTimer.Seen()
+			if !n.connected {
+				n.sendData(n.anyNode, BROADCAST, nil)
+				n.broadcastTimer.SafeReset(BROADCASTTIME)
+			}
+
+		case <-n.stopc:
+			n.running = false
+			for _, re := range n.resenders {
+				n.removeResender(re)
 			}
 			return
 		}
 	}
 }
 
-func (node *NetworkNode) processUDPMessage(umsg *UDPMessage) {
+func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	msg := new(Message)
-	msg.ID = binary.BigEndian.Uint32(umsg.payload[:])
-	msg.Type = binary.BigEndian.Uint32(umsg.payload[4:])
-	msg.ReadCount = binary.BigEndian.Uint32(umsg.payload[8:])
-	copy(msg.Data[:], umsg.payload[16:])
-	
+	msg.Decode(umsg.payload[:])
+
 	if msg.ReadCount > MAX_READ_COUNT {
 		return
 	}
@@ -256,148 +273,110 @@ func (node *NetworkNode) processUDPMessage(umsg *UDPMessage) {
 
 	switch msg.Type {
 	case BROADCAST:
-		if umsg.from != node.thisNode {
-			var data [8]byte
+		if umsg.from != n.thisNode {
 			var hd HelloData
-			hd.possibleNewLeft = node.thisNode
-			if node.connected {
-				hd.possibleNewRight = node.rightNode
+			hd.possibleNewLeft = n.thisNode
+			if n.connected {
+				hd.possibleNewRight = n.rightNode
 			} else {
-				hd.possibleNewRight = node.thisNode
+				hd.possibleNewRight = n.thisNode
 			}
-			binary.BigEndian.PutUint32(data[:], uint32(hd.possibleNewRight))
-			binary.BigEndian.PutUint32(data[4:], uint32(hd.possibleNewLeft))
 
-			if !node.connected {
+			if !n.connected {
 				time.Sleep(LONELY_DELAY)
 			}
-			node.sendData(umsg.from, HELLO, data[:], len(data))
+			n.sendData(umsg.from, HELLO, &hd)
 		}
 
 	case HELLO:
-		if !node.connected {
+		if !n.connected {
 			var hd HelloData
-			hd.possibleNewRight = binary.BigEndian.Uint32(msg.Data[:])
-			hd.possibleNewLeft = binary.BigEndian.Uint32(msg.Data[4:])
+			hd.Decode(msg.Data[:])
 
-			node.rightNode = hd.possibleNewRight
-			node.leftNode = hd.possibleNewLeft
-			node.updateConnected()
+			n.rightNode = hd.possibleNewRight
+			n.leftNode = hd.possibleNewLeft
+			n.updateConnected()
 
-			var data [8]byte
-			var ad AddData
+			var add AddData
 			if hd.possibleNewRight == hd.possibleNewLeft {
-				ad.asRight = 1
-				ad.asLeft = 1
-				binary.BigEndian.PutUint32(data[:], ad.asRight)
-				binary.BigEndian.PutUint32(data[4:], ad.asLeft)
-				node.sendData(node.leftNode, ADD, data[:], len(data))
+				add.asRight = 1
+				add.asLeft = 1
+				n.sendData(n.leftNode, ADD, &add)
 			} else {
-				ad.asRight = 0
-				ad.asLeft = 1
-				binary.BigEndian.PutUint32(data[:], ad.asRight)
-				binary.BigEndian.PutUint32(data[4:], ad.asLeft)
-				node.sendData(node.rightNode, ADD, data[:], len(data))
+				add.asRight = 0
+				add.asLeft = 1
+				n.sendData(n.rightNode, ADD, &add)
 
-				ad.asRight = 1
-				ad.asLeft = 0
-				binary.BigEndian.PutUint32(data[:], ad.asRight)
-				binary.BigEndian.PutUint32(data[4:], ad.asLeft)
-				node.sendData(node.leftNode, ADD, data[:], len(data))
+				add.asRight = 1
+				add.asLeft = 0
+				n.sendData(n.leftNode, ADD, &add)
 			}
 		}
 
 	case ADD:
 		var add AddData
-		add.asRight = binary.BigEndian.Uint32(msg.Data[:])
-		add.asLeft = binary.BigEndian.Uint32(msg.Data[4:])
+		add.Decode(msg.Data[:])
 		if add.asRight == 1 {
-			node.rightNode = umsg.from
+			n.rightNode = umsg.from
 		}
 		if add.asLeft == 1 {
-			node.leftNode = umsg.from
+			n.leftNode = umsg.from
 		}
-		node.updateConnected()
+		n.updateConnected()
 
 	case ALIVE:
-		if node.connected && umsg.from == node.rightNode {
-			node.kickTimer.SafeReset(KICKTIME)
+		if n.connected && umsg.from == n.rightNode {
+			n.kickTimer.SafeReset(KICKTIME)
 		}
 
 	case KICK:
-		if node.connected {
+		if n.connected {
 			var kick KickData
-			kick.deadNode = binary.BigEndian.Uint32(msg.Data[:])
-			kick.senderNode = binary.BigEndian.Uint32(msg.Data[4:])
+			kick.Decode(msg.Data[:])
 
-			if re, ok := node.resenders[msg.ID]; ok {
-				node.rightNode = umsg.from
-				node.removeResender(re)
-				node.kickTimer.SafeReset(KICKTIME)
+			if re, ok := n.resenders[msg.ID]; ok {
+				n.rightNode = umsg.from
+				n.removeResender(re)
+				n.kickTimer.SafeReset(KICKTIME)
 			} else {
-				if kick.deadNode == node.leftNode {
-					node.leftNode = kick.senderNode
+				if kick.deadNode == n.leftNode {
+					n.leftNode = kick.senderNode
 				}
-				node.forwardMsg(msg, LEFT)
-				node.deadNodes.Add(kick.deadNode)
+				n.forwardMsg(msg, LEFT)
+				n.deadNodes.Add(kick.deadNode)
 			}
 		}
 	}
 
 	// User-defined message type
 	if msg.Type >= 5 {
-		if node.connected && umsg.from == node.leftNode {
+		if n.connected && umsg.from == n.leftNode {
 			var c chan *Message
-			if re, ok := node.resenders[msg.ID]; ok {
-				c = node.ReceiveMyMessage
-				node.removeResender(re)
+			if re, ok := n.resenders[msg.ID]; ok {
+				c = n.msgsFromUserToUser
+				n.removeResender(re)
 			} else {
-				c = node.ReceiveOtherMessage
+				c = n.msgsFromUserToOther
 			}
 
-			// Do not block if the user doesn't process messages.
-			go func(c chan *Message, m *Message) {
-				timeOut := time.After(USER_RECV_DEADLINE)
-				for {
-					select {
-					case <-timeOut:
-						return
-					case c <- m:
-						return
-					}
-				}
-			}(c, msg)
+			select {
+			case c <- msg: // Do not block if buffer is full.
+			default:
+			}
 		}
 	}
 }
 
-func (node *NetworkNode) createKickMsg() *Message {
-	msg := &Message{
-		ID:        rand.Uint32(),
-		Type:      KICK,
-		ReadCount: 0,
-	}
-
-	kd := KickData{
-		deadNode:   node.rightNode,
-		senderNode: node.thisNode,
-	}
-	binary.BigEndian.PutUint32(msg.Data[:], kd.deadNode)
-	binary.BigEndian.PutUint32(msg.Data[4:], kd.senderNode)
-
-	return msg
-}
-
-func (node *NetworkNode) addResender(msg *Message, resendInterval time.Duration) {
+func (n *Node) addResender(msg *Message, resendInterval time.Duration) {
 	re := &Resender{
 		msg:       msg,
 		timer:     NewSafeTimer(resendInterval),
 		triesLeft: MAX_RESEND_COUNT,
 		stopc:     make(chan struct{}),
 	}
-	node.resenders[msg.ID] = re
+	n.resenders[msg.ID] = re
 
-	// Goroutine for sending resender to node.resenderTimedOut on time out.
+	// Goroutine for sending resender to n.resenderTimedOut on time out.
 	// Remember to close re.stopc when removing a resender.
 	//
 	// Potential race: this goroutine has a pointer to a resender after it may
@@ -405,7 +384,7 @@ func (node *NetworkNode) addResender(msg *Message, resendInterval time.Duration)
 	// trying to close a closed channel.
 	//
 	// Solution: send msg.ID instead and let the receiver lookup the resender.
-	go func(n *NetworkNode, msg *Message) {
+	go func(n *Node, msg *Message) {
 		for {
 			select {
 			case <-re.stopc:
@@ -415,56 +394,46 @@ func (node *NetworkNode) addResender(msg *Message, resendInterval time.Duration)
 				n.resenderTimedOut <- msg.ID
 			}
 		}
-	}(node, msg)
+	}(n, msg)
 }
 
-func (node *NetworkNode) removeResender(re *Resender) {
+func (n *Node) removeResender(re *Resender) {
 	// Stop forwarding goroutine.
 	close(re.stopc)
-	delete(node.resenders, re.msg.ID)
+	delete(n.resenders, re.msg.ID)
 }
 
-func (node *NetworkNode) sendData(to uint32, mtype uint32, data []byte, size int) {
-	umsg := &UDPMessage{
-		to:   to,
-		from: node.thisNode,
-	}
-
+func (n *Node) sendData(to uint32, mtype uint32, data EncoderDecoder) {
+	umsg := &UDPMessage{to: to, from: n.thisNode}
 	binary.BigEndian.PutUint32(umsg.payload[:], rand.Uint32())
-	binary.BigEndian.PutUint32(umsg.payload[4:], uint32(mtype))
+	binary.BigEndian.PutUint32(umsg.payload[4:], mtype)
 	if data != nil {
-		copy(umsg.payload[16:], data[:size])
+		data.Encode(umsg.payload[:])
 	}
-
-	node.udp.Send(umsg)
+	n.udp.Send(umsg)
 }
 
-func (node *NetworkNode) forwardMsg(msg *Message, direction MsgDirection) {
+func (n *Node) forwardMsg(msg *Message, direction MsgDirection) {
 	umsg := new(UDPMessage)
-	umsg.from = node.thisNode
+	umsg.from = n.thisNode
 	if direction == RIGHT {
-		umsg.to = node.rightNode
+		umsg.to = n.rightNode
 	} else {
-		umsg.to = node.leftNode
+		umsg.to = n.leftNode
 	}
-
-	binary.BigEndian.PutUint32(umsg.payload[:], msg.ID)
-	binary.BigEndian.PutUint32(umsg.payload[4:], uint32(msg.Type))
-	binary.BigEndian.PutUint32(umsg.payload[8:], msg.ReadCount)
-	copy(umsg.payload[16:], msg.Data[:])
-
-	node.udp.Send(umsg)
+	msg.Encode(umsg.payload[:])
+	n.udp.Send(umsg)
 }
 
-func (node *NetworkNode) updateConnected() {
-	if node.rightNode == 0 || node.leftNode == 0 {
-		node.rightNode = 0
-		node.leftNode = 0
-		node.connected = false
-		node.broadcastTimer.SafeReset(BROADCASTTIME)
-	} else if !node.connected {
-		node.connected = true
-		node.aliveTimer.SafeReset(ALIVETIME)
-		node.kickTimer.SafeReset(KICKTIME)
+func (n *Node) updateConnected() {
+	if n.rightNode == 0 || n.leftNode == 0 {
+		n.rightNode = 0
+		n.leftNode = 0
+		n.connected = false
+		n.broadcastTimer.SafeReset(BROADCASTTIME)
+	} else if !n.connected {
+		n.connected = true
+		n.aliveTimer.SafeReset(ALIVETIME)
+		n.kickTimer.SafeReset(KICKTIME)
 	}
 }
