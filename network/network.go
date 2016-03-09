@@ -1,8 +1,12 @@
+// The network package implements a circular overlay network which maintains itself and
+// allow new nodes to connect. Each node keeps track of its left and right neighbour as
+// well as its second neighbour on the left. This allows for easy maintainence of the
+// circular overlay network. The network can recover from the simultaneous loss of
+// multiple nonconsecutive nodes. 
 package network
 
 import (
 	"encoding/binary"
-	"io"
 	"math/rand"
 	"time"
 )
@@ -48,7 +52,7 @@ type Message struct {
 	Data      [MAX_DATA_SIZE]byte
 }
 
-func NewMessage(mtype uint32, data EncoderDecoder) *Message {
+func NewMessage(mtype uint32, data BinaryMarshaller) *Message {
 	msg := &Message{ID: rand.Uint32(), Type: mtype}
 	if data != nil {
 		data.Encode(msg.Data[:])
@@ -64,6 +68,7 @@ type HelloData struct {
 type AddData struct {
 	asRight uint32
 	asLeft  uint32
+	as2ndLeft uint32
 }
 
 type KickData struct {
