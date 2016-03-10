@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	aliveTime          = 50 * time.Millisecond
-	kickTime           = 500 * time.Millisecond
+	aliveTime          = 1000 * time.Millisecond
+	kickTime           = 750 * time.Millisecond
 	broadcastTime      = 5000 * time.Millisecond
 	msgResendInterval  = 2000 * time.Millisecond
 	kickResendInterval = 200 * time.Millisecond
@@ -221,7 +221,7 @@ func (n *Node) maintainNetwork() {
 					n.removeResender(re)
 					n.leftNode = 0
 					n.rightNode = 0
-					n.connected = false
+					n.update()
 				}
 			}
 
@@ -243,10 +243,7 @@ func (n *Node) maintainNetwork() {
 				if n.leftIsAlive && n.left2ndIsAlive {
 					n.aliveTimer.SafeReset(aliveTime)
 				} else {
-					err := n.restoreNetwork()
-					if err != nil {
-						n.connected = false
-					}
+					n.restoreNetwork()
 				}
 			}
 
@@ -277,7 +274,7 @@ func (n *Node) restoreNetwork() error {
 		// no way of recovering and we have no choice but to
 		// disconnect.
 		n.leftNode = 0
-		n.connected = false
+		n.update()
 		return errors.New("Not able to restore connectivity.")
 	} else if !n.leftIsAlive && n.left2ndIsAlive {
 		// Easy removal of dead node is possible.
@@ -345,9 +342,8 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 
 			n.rightNode = hd.newRight
 			n.leftNode = hd.newLeft
-			n.connected = true
-			n.aliveTimer.SafeReset(aliveTime)
-
+			n.update()
+			
 			if hd.newRight == hd.newLeft {
 				n.sendData(n.leftNode, UPDATE, &UpdateData{
 					right:   n.thisNode,
@@ -377,6 +373,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 		if ud.left2nd != 0 {
 			n.left2ndNode = ud.left2nd
 		}
+		n.update()
 
 	case GET:
 		if n.connected {
@@ -473,4 +470,15 @@ func (n *Node) forwardMsg(msg *Message) {
 	umsg.to = n.rightNode
 	msg.Encode(umsg.payload[:])
 	n.udp.Send(umsg)
+}
+
+func (n *Node) update() {
+	if n.leftNode == 0 || n.rightNode == 0 {
+		n.leftNode = 0
+		n.rightNode = 0
+		n.left2ndNode = 0
+	} else if !n.connected {
+		n.connected = true
+		n.aliveTimer.SafeReset(aliveTime)
+	}
 }
