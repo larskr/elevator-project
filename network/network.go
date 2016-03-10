@@ -482,6 +482,7 @@ func (n *Node) update() {
 		n.leftNode = 0
 		n.rightNode = 0
 		n.left2ndNode = 0
+		n.broadcastTimer.SafeReset(broadcastTime)
 	} else if !n.connected {
 		n.connected = true
 		n.aliveTimer.SafeReset(aliveTime)
