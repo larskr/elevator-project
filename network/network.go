@@ -321,11 +321,12 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	case BROADCAST:
 		if umsg.from != n.thisNode {
 			var hd HelloData
-			hd.newRight = n.rightNode
 			if n.connected {
+				hd.newRight = n.rightNode
 				hd.newLeft = n.thisNode
 				hd.newLeft2nd = n.leftNode
 			} else {
+				hd.newRight = n.thisNode
 				hd.newLeft = n.thisNode
 				hd.newLeft2nd = umsg.from
 			}

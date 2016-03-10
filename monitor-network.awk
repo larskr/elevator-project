@@ -40,16 +40,16 @@ function sprintf_data(type, data) {
 		right = hex_read_ipaddr(data, 1);
 		left = hex_read_ipaddr(data, 9)
 		left2 = hex_read_ipaddr(data, 17);
-		return sprintf("(new_right %s, new_left %s, new_left2)", right, left, left2);
+		return sprintf("(new_right %s, new_left %s, new_left2 %s)", right, left, left2);
 	} else if (type == 2) {
 		right = hex_read_ipaddr(data, 1);
 		left = hex_read_ipaddr(data, 9);
 		left2 = hex_read_ipaddr(data, 17);
-		if (right != 0 && left != 0 && left2 !=0) {
+		if (right != "0.0.0.0" && left != "0.0.0.0" && left2 !="0.0.0.0") {
 			return sprintf("(set_right %s, set_left %s, set_left2 %s)", right, left, left2);
-		} else if (right != 0 && left == 0 && left2 == 0) {
+		} else if (right != "0.0.0.0" && left == "0.0.0.0" && left2 == "0.0.0.0") {
 			return sprintf("(set_right %s)", as_right);
-		} else if (right == 0 && left != 0 && left2 != 0) {
+		} else if (right == "0.0.0.0" && left != "0.0.0.0" && left2 != "0.0.0.0") {
 			return sprintf("(set_left %s, set_left2 %s)", left, left2);
 		}
 	} else if (type == 6) {
