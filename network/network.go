@@ -461,7 +461,7 @@ func (n *Node) sendData(to uint32, mtype uint32, data EncoderDecoder) {
 	binary.BigEndian.PutUint32(umsg.payload[:], rand.Uint32())
 	binary.BigEndian.PutUint32(umsg.payload[4:], mtype)
 	if data != nil {
-		data.Encode(umsg.payload[:])
+		data.Encode(umsg.payload[16:])
 	}
 	n.udp.Send(umsg)
 }

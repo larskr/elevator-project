@@ -18,7 +18,7 @@ func Uint32ToIP(u uint32) net.IP {
 }
 
 func NetworkAddr() uint32 {
-	ifi, err := net.InterfaceByName("en0")
+	ifi, err := net.InterfaceByName("eth0")
 	if err != nil {
 		return 0
 	}
@@ -41,7 +41,7 @@ func NetworkAddr() uint32 {
 }
 
 func BroadcastAddr() uint32 {
-	ifi, err := net.InterfaceByName("en0")
+	ifi, err := net.InterfaceByName("eth0")
 	if err != nil {
 		return 0
 	}
