@@ -240,9 +240,14 @@ func (n *Node) maintainNetwork() {
 		case <-n.kickTimer.C:
 			n.kickTimer.Seen()
 			if n.connected {
-				if n.leftIsAlive && n.left2ndIsAlive {
+				if n.leftIsAlive &&
+					(n.left2ndIsAlive || n.left2ndNode == n.thisNode) {
+					// Either both nodes on the left are alive or the network
+					// consists of only two nodes and the other one is alive.
 					n.aliveTimer.SafeReset(aliveTime)
 				} else {
+					// Either one or both of the other nodes are dead. See if we
+					// can restore the connection.
 					n.restoreNetwork()
 				}
 			}

@@ -40,17 +40,17 @@ function sprintf_data(type, data) {
 		right = hex_read_ipaddr(data, 1);
 		left = hex_read_ipaddr(data, 9)
 		left2 = hex_read_ipaddr(data, 17);
-		return sprintf("(new_right %s, new_left %s, new_left2 %s)", right, left, left2);
+		return sprintf("(new_right %s, new_left %s, new_left2 %s)", color_ip(right), color_ip(left), color_ip(left2));
 	} else if (type == 2) {
 		right = hex_read_ipaddr(data, 1);
 		left = hex_read_ipaddr(data, 9);
 		left2 = hex_read_ipaddr(data, 17);
 		if (right != "0.0.0.0" && left != "0.0.0.0" && left2 !="0.0.0.0") {
-			return sprintf("(set_right %s, set_left %s, set_left2 %s)", right, left, left2);
+			return sprintf("(set_right %s, set_left %s, set_left2 %s)", color_ip(right), color_ip(left), color_ip(left2));
 		} else if (right != "0.0.0.0" && left == "0.0.0.0" && left2 == "0.0.0.0") {
-			return sprintf("(set_right %s)", as_right);
+			return sprintf("(set_right %s)", color_ip(as_right));
 		} else if (right == "0.0.0.0" && left != "0.0.0.0" && left2 != "0.0.0.0") {
-			return sprintf("(set_left %s, set_left2 %s)", left, left2);
+			return sprintf("(set_left %s, set_left2 %s)", color_ip(left), color_ip(left2));
 		}
 	} else if (type == 6) {
 		dead = color_ip(hex_read_ipaddr(data, 1));
@@ -66,7 +66,7 @@ function sprintf_msg(from, to, id, type, read_count, data) {
 	pad = substr("            ", 1, pad_len);
 	decoded_msg = sprintf("(id %10d, type %d, read_count %2d) %s",\
 			      id, type, read_count, types[type]);
-	if (type == 0 || type == 4) {
+	if (type == 0 || type == 4 || type == 3 || type == 5) {
 		return sprintf("%s%s%s", to_from_str, pad, decoded_msg)
 	} else {
 		return sprintf("%s%s%s\n    %s %s", to_from_str, pad,\
