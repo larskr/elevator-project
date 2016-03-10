@@ -4,8 +4,8 @@ BEGIN {
 	hex["8"] = 8;  hex["9"] = 9;  hex["a"] = 10; hex["b"] = 11;
 	hex["c"] = 12; hex["d"] = 13; hex["e"] = 14; hex["f"] = 15;
 
-	types[0] = "BROADCAST"; types[1] = "HELLO"; types[2] = "ADD";
-	types[3] = "KICK"; types[4] = "ALIVE";
+	types[0] = "BROADCAST"; types[1] = "HELLO"; types[2] = "UPDATE";
+	types[3] = "GET"; types[4] = "PING"; types[5] = "ALIVE"; types[6] = "KICK";
 
 	next_color = 3;
 }
@@ -37,14 +37,22 @@ function color_ip(str) {
 function sprintf_data(type, data) {
 	gsub(/ /, "", data);
 	if (type == 1) {
-		right = color_ip(hex_read_ipaddr(data, 1));
-		left = color_ip(hex_read_ipaddr(data, 9));
-		return sprintf("(new_right %s, new_left %s)", right, left);
+		right = hex_read_ipaddr(data, 1);
+		left = hex_read_ipaddr(data, 9)
+		left2 = hex_read_ipaddr(data, 17);
+		return sprintf("(new_right %s, new_left %s, new_left2)", right, left, left2);
 	} else if (type == 2) {
-		as_right = hex_read_uint32(data, 1);
-		as_left = hex_read_uint32(data, 9);
-		return sprintf("(as_right %d, as_left %d)", as_right, as_left);
-	} else if (type == 3) {
+		right = hex_read_ipaddr(data, 1);
+		left = hex_read_ipaddr(data, 9);
+		left2 = hex_read_ipaddr(data, 17);
+		if (right != 0 && left != 0 && left2 !=0) {
+			return sprintf("(set_right %s, set_left %s, set_left2 %s)", right, left, left2);
+		} else if (right != 0 && left == 0 && left2 == 0) {
+			return sprintf("(set_right %s)", as_right);
+		} else if (right == 0 && left != 0 && left2 != 0) {
+			return sprintf("(set_left %s, set_left2 %s)", left, left2);
+		}
+	} else if (type == 6) {
 		dead = color_ip(hex_read_ipaddr(data, 1));
 		sender = color_ip(hex_read_ipaddr(data, 9));
 		return sprintf("(dead %s, sender %s)", dead, sender);
