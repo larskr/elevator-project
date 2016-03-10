@@ -11,11 +11,12 @@ import (
 	"math/rand"
 	"time"
 	"errors"
+	"fmt"
 )
 
 const (
 	aliveTime          = 1000 * time.Millisecond
-	kickTime           = 750 * time.Millisecond
+	kickTime           = 1000 * time.Millisecond
 	broadcastTime      = 5000 * time.Millisecond
 	msgResendInterval  = 2000 * time.Millisecond
 	kickResendInterval = 200 * time.Millisecond
@@ -306,6 +307,10 @@ func (n *Node) restoreNetwork() error {
 
 		n.aliveTimer.SafeReset(aliveTime)
 		return nil
+	} else {
+		fmt.Println("Unknown error.")
+		fmt.Printf("leftIsAlive: %v\nn.left2ndNode == n.thisNode: %v\nn.left2ndIsAlive: %v\n",
+			n.leftIsAlive, n.left2ndNode == n.thisNode, n.left2ndIsAlive)
 	}
 	return errors.New("Not able to restore connectivity.")
 }
@@ -347,6 +352,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 
 			n.rightNode = hd.newRight
 			n.leftNode = hd.newLeft
+			n.left2ndNode = hd.newLeft2nd
 			n.update()
 			
 			if hd.newRight == hd.newLeft {

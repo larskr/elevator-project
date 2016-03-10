@@ -76,7 +76,7 @@ function sprintf_msg(from, to, id, type, read_count, data) {
 
 
 /^[0-9]/{
-	time = substr($0, 1, 10);
+	time = substr($0, 1, 11);
 	getline;
 	getline;
 	getline;
