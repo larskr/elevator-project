@@ -8,7 +8,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	node := new(NetworkNode)
+	node := new(Node)
 	node.Start()
 
 	fmt.Println(node.IsConnected())

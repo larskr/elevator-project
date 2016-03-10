@@ -1,47 +1,45 @@
-// The network package implements a circular overlay network which maintains itself and
-// allow new nodes to connect. Each node keeps track of its left and right neighbour as
-// well as its second neighbour on the left. This allows for easy maintainence of the
-// circular overlay network. The network can recover from the simultaneous loss of
-// multiple nonconsecutive nodes. 
+// The network package implements a circular overlay network which
+// maintains itself and allow new nodes to connect. Each node keeps
+// track of its left and right neighbour as well as its second neighbour
+// on the left. This allows for easy maintainence of the circular
+// overlay network. The network can recover from the simultaneous loss
+// of multiple nonconsecutive nodes.
 package network
 
 import (
 	"encoding/binary"
 	"math/rand"
 	"time"
+	"errors"
 )
 
 const (
-	ALIVETIME            = 500 * time.Millisecond
-	KICKTIME             = 2500 * time.Millisecond
-	BROADCASTTIME        = 5000 * time.Millisecond
-	MSG_RESEND_INTERVAL  = 2000 * time.Millisecond
-	KICK_RESEND_INTERVAL = 200 * time.Millisecond
-	LONELY_DELAY         = 1000 * time.Millisecond
+	aliveTime          = 50 * time.Millisecond
+	kickTime           = 500 * time.Millisecond
+	broadcastTime      = 5000 * time.Millisecond
+	msgResendInterval  = 2000 * time.Millisecond
+	kickResendInterval = 200 * time.Millisecond
+	lonelyDelay        = 1000 * time.Millisecond
 )
 
 const (
-	BUFFERED_CHAN_SIZE = 32
-	MAX_DATA_SIZE      = 240
-	MAX_RESEND_COUNT   = 5
-	MAX_READ_COUNT     = 100
+	bufferSize     = 32
+	maxDataSize    = 240
+	maxResendCount = 5
+	maxReadCount   = 100
+	maxResenders   = 100
 )
 
-// Message types. User-defined message types must be greater than 4.
+// Message types. User-defined message types must be >= 16.
+// 0-15 are reserved for future use.
 const (
-	BROADCAST = 0x0
-	HELLO     = 0x1
-	ADD       = 0x2
-	KICK      = 0x3
-	ALIVE     = 0x4
-)
-
-// Direction to send message.
-type MsgDirection int
-
-const (
-	RIGHT MsgDirection = -1
-	LEFT  MsgDirection = 1
+	BROADCAST = 0x0 // Announce that node is ready to connect.
+	HELLO     = 0x1 // Reply to broadcasting node with new possible links.
+	UPDATE    = 0x2 // Update links on neighbouring nodes.
+	GET       = 0x3 // Request for UPDATE of left2ndNode.
+	PING      = 0x4 // Check that node is alive.
+	ALIVE     = 0x5 // Reply to PING.
+	KICK      = 0x6
 )
 
 type Message struct {
@@ -49,10 +47,10 @@ type Message struct {
 	Type      uint32
 	ReadCount uint32
 	_         uint32 // padding
-	Data      [MAX_DATA_SIZE]byte
+	Data      [maxDataSize]byte
 }
 
-func NewMessage(mtype uint32, data BinaryMarshaller) *Message {
+func NewMessage(mtype uint32, data EncoderDecoder) *Message {
 	msg := &Message{ID: rand.Uint32(), Type: mtype}
 	if data != nil {
 		data.Encode(msg.Data[:])
@@ -61,14 +59,15 @@ func NewMessage(mtype uint32, data BinaryMarshaller) *Message {
 }
 
 type HelloData struct {
-	possibleNewRight uint32
-	possibleNewLeft  uint32
+	newRight   uint32
+	newLeft    uint32
+	newLeft2nd uint32
 }
 
-type AddData struct {
-	asRight uint32
-	asLeft  uint32
-	as2ndLeft uint32
+type UpdateData struct {
+	right   uint32
+	left    uint32
+	left2nd uint32
 }
 
 type KickData struct {
@@ -86,26 +85,32 @@ type Resender struct {
 
 type Node struct {
 	connected bool
+	running   bool
+	stopc     chan struct{}
 
-	thisNode  uint32
-	leftNode  uint32
-	rightNode uint32
-	anyNode   uint32
+	// Only thisNode and anyNode are guaranteed to be nonzero at all times.
+	thisNode    uint32
+	leftNode    uint32
+	left2ndNode uint32
+	rightNode   uint32
+	anyNode     uint32
 
 	udp *UDPService
 
-	msgsFromUserToUser  chan *Message
-	msgsFromUserToOther chan *Message
-	msgsToSend          chan *Message
-	msgsToForward       chan *Message
+	// Channels are for user-defined messages. They are buffered and
+	// when they are full new messages will be dropped.
+	fromUserToUser  chan *Message
+	fromUserToOther chan *Message
+	toSend          chan *Message
+	toForward       chan *Message
 
 	deadNodes chan uint32
 
-	running bool
-	stopc   chan struct{}
-
 	aliveTimer     *SafeTimer
 	kickTimer      *SafeTimer
+	leftIsAlive    bool
+	left2ndIsAlive bool
+
 	broadcastTimer *SafeTimer
 
 	// Note: The map datatype in Go is not thread-safe. In this
@@ -128,20 +133,20 @@ func (n *Node) Start() error {
 			return nil
 		}
 
-		n.aliveTimer = NewSafeTimer(ALIVETIME)
-		n.kickTimer = NewSafeTimer(KICKTIME)
-		n.broadcastTimer = NewSafeTimer(BROADCASTTIME)
+		n.aliveTimer = NewSafeTimer(aliveTime)
+		n.kickTimer = NewSafeTimer(kickTime)
+		n.broadcastTimer = NewSafeTimer(broadcastTime)
 
 		n.resenders = make(map[uint32]*Resender)
-		n.resenderTimedOut = make(chan uint32, BUFFERED_CHAN_SIZE)
+		n.resenderTimedOut = make(chan uint32, maxResenders)
 
-		n.msgsFromUserToUser = make(chan *Message, BUFFERED_CHAN_SIZE)
-		n.msgsFromUserToOther = make(chan *Message, BUFFERED_CHAN_SIZE)
+		n.fromUserToUser = make(chan *Message, bufferSize)
+		n.fromUserToOther = make(chan *Message, bufferSize)
 
-		n.msgsToSend = make(chan *Message, BUFFERED_CHAN_SIZE)
-		n.msgsToForward = make(chan *Message, BUFFERED_CHAN_SIZE)
+		n.toSend = make(chan *Message, bufferSize)
+		n.toForward = make(chan *Message, bufferSize)
 
-		n.deadNodes = make(chan uint32, BUFFERED_CHAN_SIZE)
+		n.deadNodes = make(chan uint32, bufferSize)
 
 		n.stopc = make(chan struct{})
 
@@ -165,25 +170,25 @@ func (n *Node) Stop() {
 }
 
 func (n *Node) ReceiveMyMessage() *Message {
-	return <-n.msgsFromUserToUser
+	return <-n.fromUserToUser
 }
 
 func (n *Node) ReceiveMessage() *Message {
-	return <-n.msgsFromUserToUser
+	return <-n.fromUserToUser
 }
 
 func (n *Node) ForwardMessage(msg *Message) {
 	if msg.Type < 5 {
 		return
 	}
-	n.msgsToForward <- msg
+	n.toForward <- msg
 }
 
 func (n *Node) SendMessage(msg *Message) {
 	if msg.Type < 5 {
 		return
 	}
-	n.msgsToSend <- msg
+	n.toSend <- msg
 }
 
 func (n *Node) Addr() uint32 {
@@ -196,57 +201,52 @@ func (n *Node) GetDeadNodeAddr() uint32 {
 
 func (n *Node) maintainNetwork() {
 	for {
-		n.updateConnected()
-
 		select {
 		case umsg := <-n.udp.receivec:
-			// Note: This must not block when sending user-defined
-			// message to the msgsFromUserToUser or msgsFromUserToOther.
 			n.processUDPMessage(umsg)
 
-		case msg := <-n.msgsToForward:
-			n.forwardMsg(msg, RIGHT)
+		case msg := <-n.toForward:
+			n.forwardMsg(msg)
 
-		case msg := <-n.msgsToSend:
-			n.addResender(msg, MSG_RESEND_INTERVAL)
+		case msg := <-n.toSend:
+			n.addResender(msg, msgResendInterval)
 
 		case ID := <-n.resenderTimedOut:
 			if re, ok := n.resenders[ID]; ok {
 				if re.triesLeft > 0 {
-					if re.msg.Type == KICK {
-						n.forwardMsg(re.msg, LEFT)
-					} else {
-						n.forwardMsg(re.msg, RIGHT)
-					}
+					n.forwardMsg(re.msg)
 					re.triesLeft--
 					re.timer.SafeReset(re.resendInterval)
 				} else {
 					n.removeResender(re)
 					n.leftNode = 0
 					n.rightNode = 0
-					n.updateConnected()
+					n.connected = false
 				}
 			}
 
 		case <-n.aliveTimer.C:
 			n.aliveTimer.Seen()
 			if n.connected {
-				n.sendData(n.leftNode, ALIVE, nil)
-				n.aliveTimer.SafeReset(ALIVETIME)
+				n.leftIsAlive = false
+				n.left2ndIsAlive = false
+				n.sendData(n.leftNode, PING, nil)
+				if n.left2ndNode != 0 && n.left2ndNode != n.thisNode {
+					n.sendData(n.left2ndNode, PING, nil)
+				}
+				n.kickTimer.SafeReset(kickTime)
 			}
 
 		case <-n.kickTimer.C:
 			n.kickTimer.Seen()
 			if n.connected {
-				kickMsg := NewMessage(KICK, &KickData{
-					deadNode:   n.rightNode,
-					senderNode: n.thisNode,
-				})
-				n.addResender(kickMsg, KICK_RESEND_INTERVAL)
-				n.kickTimer.SafeReset(KICKTIME)
-				select {
-				case n.deadNodes <- n.rightNode:
-				default:
+				if n.leftIsAlive && n.left2ndIsAlive {
+					n.aliveTimer.SafeReset(aliveTime)
+				} else {
+					err := n.restoreNetwork()
+					if err != nil {
+						n.connected = false
+					}
 				}
 			}
 
@@ -254,11 +254,12 @@ func (n *Node) maintainNetwork() {
 			n.broadcastTimer.Seen()
 			if !n.connected {
 				n.sendData(n.anyNode, BROADCAST, nil)
-				n.broadcastTimer.SafeReset(BROADCASTTIME)
+				n.broadcastTimer.SafeReset(broadcastTime)
 			}
 
 		case <-n.stopc:
 			n.running = false
+			n.connected = false
 			for _, re := range n.resenders {
 				n.removeResender(re)
 			}
@@ -267,11 +268,51 @@ func (n *Node) maintainNetwork() {
 	}
 }
 
+func (n *Node) restoreNetwork() error {
+	if (!n.leftIsAlive && !n.left2ndIsAlive) &&
+		(n.left2ndNode == 0 || n.left2ndNode == n.thisNode) {
+		// This happens when there are only two nodes in the
+		// network and when left2ndNode has not yet been updated
+		// by leftNode. Thus since leftIsAlive is false there is
+		// no way of recovering and we have no choice but to
+		// disconnect.
+		n.leftNode = 0
+		n.connected = false
+		return errors.New("Not able to restore connectivity.")
+	} else if !n.leftIsAlive && n.left2ndIsAlive {
+		// Easy removal of dead node is possible.
+		deadNode := n.leftNode
+		n.leftNode = n.left2ndNode
+		n.sendData(n.rightNode, UPDATE, &UpdateData{
+			left2nd: n.left2ndNode,
+		})
+		n.sendData(n.leftNode, UPDATE, &UpdateData{
+			right: n.thisNode,
+		})
+		// This leaves n.left2ndNode incorrectly pointing to
+		// n.leftNode. The link to the 2nd node is not critical
+		// for forwarding messages, but we can't start pinging it
+		// before it is set correctly. One solution is to set
+		// it to zero and don't ping untill it is set by an UPDATE.
+		n.left2ndNode = 0
+		n.sendData(n.leftNode, GET, nil)
+
+		n.addResender(NewMessage(KICK, &KickData{
+			deadNode:   deadNode,
+			senderNode: n.thisNode,
+		}), kickResendInterval)
+
+		n.aliveTimer.SafeReset(aliveTime)
+		return nil
+	}
+	return errors.New("Not able to restore connectivity.")
+}
+
 func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	msg := new(Message)
 	msg.Decode(umsg.payload[:])
 
-	if msg.ReadCount > MAX_READ_COUNT {
+	if msg.ReadCount > maxReadCount {
 		return
 	}
 	msg.ReadCount++
@@ -280,15 +321,18 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	case BROADCAST:
 		if umsg.from != n.thisNode {
 			var hd HelloData
-			hd.possibleNewLeft = n.thisNode
+			hd.newRight = n.rightNode
 			if n.connected {
-				hd.possibleNewRight = n.rightNode
+				hd.newLeft = n.thisNode
+				hd.newLeft2nd = n.leftNode
 			} else {
-				hd.possibleNewRight = n.thisNode
+				hd.newLeft = n.thisNode
+				hd.newLeft2nd = umsg.from
 			}
 
+			// Avoid forming disjoint networks at statup.
 			if !n.connected {
-				time.Sleep(LONELY_DELAY)
+				time.Sleep(lonelyDelay)
 			}
 			n.sendData(umsg.from, HELLO, &hd)
 		}
@@ -298,40 +342,59 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 			var hd HelloData
 			hd.Decode(msg.Data[:])
 
-			n.rightNode = hd.possibleNewRight
-			n.leftNode = hd.possibleNewLeft
-			n.updateConnected()
+			n.rightNode = hd.newRight
+			n.leftNode = hd.newLeft
+			n.connected = true
+			n.aliveTimer.SafeReset(aliveTime)
 
-			var add AddData
-			if hd.possibleNewRight == hd.possibleNewLeft {
-				add.asRight = 1
-				add.asLeft = 1
-				n.sendData(n.leftNode, ADD, &add)
+			if hd.newRight == hd.newLeft {
+				n.sendData(n.leftNode, UPDATE, &UpdateData{
+					right:   n.thisNode,
+					left:    n.thisNode,
+					left2nd: umsg.from,
+				})
 			} else {
-				add.asRight = 0
-				add.asLeft = 1
-				n.sendData(n.rightNode, ADD, &add)
-
-				add.asRight = 1
-				add.asLeft = 0
-				n.sendData(n.leftNode, ADD, &add)
+				n.sendData(n.rightNode, UPDATE, &UpdateData{
+					left:    n.thisNode,
+					left2nd: n.leftNode,
+				})
+				n.sendData(n.leftNode, UPDATE, &UpdateData{right: n.thisNode})
 			}
+			// This connection protocol works perfectly if all messages are received.
+			// TODO: What happens if one or both UPDATE messages never arrive?
 		}
 
-	case ADD:
-		var add AddData
-		add.Decode(msg.Data[:])
-		if add.asRight == 1 {
-			n.rightNode = umsg.from
+	case UPDATE:
+		var ud UpdateData
+		ud.Decode(msg.Data[:])
+		if ud.right != 0 {
+			n.rightNode = ud.right
 		}
-		if add.asLeft == 1 {
-			n.leftNode = umsg.from
+		if ud.left != 0 {
+			n.leftNode = ud.right
 		}
-		n.updateConnected()
+		if ud.left2nd != 0 {
+			n.left2ndNode = ud.left2nd
+		}
+
+	case GET:
+		if n.connected {
+			n.sendData(umsg.from, UPDATE, &UpdateData{left2nd: n.leftNode})
+		}
+
+	case PING:
+		if n.connected {
+			n.sendData(umsg.from, ALIVE, nil)
+		}
 
 	case ALIVE:
-		if n.connected && umsg.from == n.rightNode {
-			n.kickTimer.SafeReset(KICKTIME)
+		if n.connected {
+			switch umsg.from {
+			case n.leftNode:
+				n.leftIsAlive = true
+			case n.left2ndNode:
+				n.left2ndIsAlive = true
+			}
 		}
 
 	case KICK:
@@ -339,16 +402,9 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 			var kick KickData
 			kick.Decode(msg.Data[:])
 
-			if re, ok := n.resenders[msg.ID]; ok {
-				n.rightNode = umsg.from
-				n.removeResender(re)
-				n.kickTimer.SafeReset(KICKTIME)
-			} else {
-				if kick.deadNode == n.leftNode {
-					n.leftNode = kick.senderNode
-				}
-				n.forwardMsg(msg, LEFT)
-				n.deadNodes.Add(kick.deadNode)
+			select {
+			case n.deadNodes <- kick.deadNode:
+			default:
 			}
 		}
 	}
@@ -358,14 +414,14 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 		if n.connected && umsg.from == n.leftNode {
 			var c chan *Message
 			if re, ok := n.resenders[msg.ID]; ok {
-				c = n.msgsFromUserToUser
+				c = n.fromUserToUser
 				n.removeResender(re)
 			} else {
-				c = n.msgsFromUserToOther
+				c = n.fromUserToOther
 			}
 
 			select {
-			case c <- msg: // Do not block if buffer is full.
+			case c <- msg:
 			default:
 			}
 		}
@@ -376,19 +432,11 @@ func (n *Node) addResender(msg *Message, resendInterval time.Duration) {
 	re := &Resender{
 		msg:       msg,
 		timer:     NewSafeTimer(resendInterval),
-		triesLeft: MAX_RESEND_COUNT,
+		triesLeft: maxResendCount,
 		stopc:     make(chan struct{}),
 	}
 	n.resenders[msg.ID] = re
 
-	// Goroutine for sending resender to n.resenderTimedOut on time out.
-	// Remember to close re.stopc when removing a resender.
-	//
-	// Potential race: this goroutine has a pointer to a resender after it may
-	// have been removed. This may result in a second call to removeResender
-	// trying to close a closed channel.
-	//
-	// Solution: send msg.ID instead and let the receiver lookup the resender.
 	go func(n *Node, msg *Message) {
 		for {
 			select {
@@ -418,27 +466,10 @@ func (n *Node) sendData(to uint32, mtype uint32, data EncoderDecoder) {
 	n.udp.Send(umsg)
 }
 
-func (n *Node) forwardMsg(msg *Message, direction MsgDirection) {
+func (n *Node) forwardMsg(msg *Message) {
 	umsg := new(UDPMessage)
 	umsg.from = n.thisNode
-	if direction == RIGHT {
-		umsg.to = n.rightNode
-	} else {
-		umsg.to = n.leftNode
-	}
+	umsg.to = n.rightNode
 	msg.Encode(umsg.payload[:])
 	n.udp.Send(umsg)
-}
-
-func (n *Node) updateConnected() {
-	if n.rightNode == 0 || n.leftNode == 0 {
-		n.rightNode = 0
-		n.leftNode = 0
-		n.connected = false
-		n.broadcastTimer.SafeReset(BROADCASTTIME)
-	} else if !n.connected {
-		n.connected = true
-		n.aliveTimer.SafeReset(ALIVETIME)
-		n.kickTimer.SafeReset(KICKTIME)
-	}
 }
