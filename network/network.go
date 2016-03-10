@@ -479,6 +479,7 @@ func (n *Node) forwardMsg(msg *Message) {
 
 func (n *Node) update() {
 	if n.leftNode == 0 || n.rightNode == 0 {
+		n.connected = false
 		n.leftNode = 0
 		n.rightNode = 0
 		n.left2ndNode = 0
