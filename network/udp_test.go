@@ -2,16 +2,20 @@ package network
 
 import (
 	"fmt"
-	//"net"
 	"os"
 	"testing"
 )
 
 func TestMain(m *testing.M) {
 	node := new(Node)
-	node.Start()
+	err := node.Start()
+	if err != nil {
+		fmt.Println(err)
+	}
 
-	fmt.Println(node.IsConnected())
+	NetworkAddrs()
+	
+	//fmt.Println(node.IsConnected())
 	
 	select{}
 

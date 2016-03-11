@@ -1,90 +1,87 @@
 package network
 
 import (
-	"encoding/binary"
 	"net"
+	"fmt"
 )
 
 const (
-	MAX_PAYLOAD_SIZE       = 256
-	UDP_PORT               = 2048
-	UDP_BUFFERED_CHAN_SIZE = 32
+	maxPayloadLength = 256
+	UDPPort          = 2048
+	UDPBufferSize    = 32
 )
 
 type UDPMessage struct {
-	from    uint32
-	to      uint32
-	payload [MAX_PAYLOAD_SIZE]byte
+	from    Addr
+	to      Addr
+	buf     [maxPayloadLength]byte
+
+	payload []byte
 }
 
 type UDPService struct {
 	conn     *net.UDPConn
 	receivec chan *UDPMessage
 	sendc    chan *UDPMessage
+
+	addr Addr
 }
 
 func NewUDPService() (*UDPService, error) {
 	addr := net.UDPAddr{
-		IP:   net.IPv4zero, // INADDR_ANY
-		Port: UDP_PORT,
+		IP:   net.IPv6unspecified,
+		Port: UDPPort,
 	}
-
-	conn, err := net.ListenUDP("udp4", &addr)
+	laddr, _ := NetworkAddrs()
+	
+	conn, err := net.ListenUDP("udp6", &addr)
 	if err != nil {
 		return nil, err
 	}
-
 	s := &UDPService{
 		conn:     conn,
-		receivec: make(chan *UDPMessage, UDP_BUFFERED_CHAN_SIZE),
-		sendc:    make(chan *UDPMessage, UDP_BUFFERED_CHAN_SIZE),
+		receivec: make(chan *UDPMessage, UDPBufferSize),
+		sendc:    make(chan *UDPMessage, UDPBufferSize),
+		addr:    laddr,
 	}
-
+	
 	go s.receiveLoop()
 	go s.sendLoop()
 
 	return s, nil
 }
 
-func (s *UDPService) Send(msg *UDPMessage) {
-	s.sendc <- msg
+func (s *UDPService) Send(umsg *UDPMessage) {
+	s.sendc <- umsg
 }
 
 func (s *UDPService) Receive() *UDPMessage {
-	msg := <-s.receivec
-	return msg
+	umsg := <-s.receivec
+	return umsg
 }
 
 func (s *UDPService) receiveLoop() {
-	var buf [MAX_PAYLOAD_SIZE + 8]byte
 	for {
-		n, _, err := s.conn.ReadFromUDP(buf[:])
+		umsg := new(UDPMessage)
+		umsg.to = s.addr		
+		n, raddr, err := s.conn.ReadFromUDP(umsg.buf[:])
 		if n == 0 || err != nil {
 			continue
 		}
-
-		umsg := new(UDPMessage)
-		umsg.from = binary.BigEndian.Uint32(buf[:])
-		umsg.to = binary.BigEndian.Uint32(buf[4:])
-		copy(umsg.payload[:], buf[8:])
-
+		umsg.from = Addr(raddr.IP.To16())
+		umsg.payload = umsg.buf[:n]
 		s.receivec <- umsg
 	}
 }
 
 func (s *UDPService) sendLoop() {
-	var buf [MAX_PAYLOAD_SIZE + 8]byte
 	for {
 		umsg := <-s.sendc
 		addr := net.UDPAddr{
-			IP:   Uint32ToIP(umsg.to),
-			Port: UDP_PORT,
+			IP:   net.IP(umsg.to),
+			Port: UDPPort,
 		}
-
-		binary.BigEndian.PutUint32(buf[:], umsg.from)
-		binary.BigEndian.PutUint32(buf[4:], umsg.to)
-		copy(buf[8:], umsg.payload[:])
-
-		s.conn.WriteToUDP(buf[:], &addr)
+		s.conn.WriteToUDP(umsg.payload, &addr)
+		fmt.Println("Sent.")
 	}
 }

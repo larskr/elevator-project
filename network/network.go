@@ -7,11 +7,10 @@
 package network
 
 import (
-	"encoding/binary"
+	"bytes"
+	"errors"
 	"math/rand"
 	"time"
-	"errors"
-	"fmt"
 )
 
 const (
@@ -25,14 +24,14 @@ const (
 
 const (
 	bufferSize     = 32
-	maxDataSize    = 240
+	maxDataLength  = 248
 	maxResendCount = 5
 	maxReadCount   = 100
 	maxResenders   = 100
 )
 
 // Message types. User-defined message types must be >= 16.
-// 0-15 are reserved for future use.
+// 0-15 are reserved.
 const (
 	BROADCAST = 0x0 // Announce that node is ready to connect.
 	HELLO     = 0x1 // Reply to broadcasting node with new possible links.
@@ -40,40 +39,44 @@ const (
 	GET       = 0x3 // Request for UPDATE of left2ndNode.
 	PING      = 0x4 // Check that node is alive.
 	ALIVE     = 0x5 // Reply to PING.
-	KICK      = 0x6
+	KICK      = 0x6 // Inform network that a node has been kicked.
 )
 
 type Message struct {
 	ID        uint32
-	Type      uint32
-	ReadCount uint32
-	_         uint32 // padding
-	Data      [maxDataSize]byte
+	Type      uint8
+	ReadCount uint8
+	_         uint16
+	buf       [maxDataLength]byte
+
+	Data []byte // points into buf
 }
 
-func NewMessage(mtype uint32, data EncoderDecoder) *Message {
-	msg := &Message{ID: rand.Uint32(), Type: mtype}
+func NewMessage(mtype uint8, data []byte) *Message {
+	msg := &Message{ID: rand.Uint32(), Type: uint8(mtype)}
+	n := 0
 	if data != nil {
-		data.Encode(msg.Data[:])
+		n = copy(msg.buf[:], data)
 	}
+	msg.Data = msg.buf[:n]
 	return msg
 }
 
 type HelloData struct {
-	newRight   uint32
-	newLeft    uint32
-	newLeft2nd uint32
+	newRight   Addr
+	newLeft    Addr
+	newLeft2nd Addr
 }
 
 type UpdateData struct {
-	right   uint32
-	left    uint32
-	left2nd uint32
+	right   Addr
+	left    Addr
+	left2nd Addr
 }
 
 type KickData struct {
-	deadNode   uint32
-	senderNode uint32
+	deadNode   Addr
+	senderNode Addr
 }
 
 type Resender struct {
@@ -90,11 +93,11 @@ type Node struct {
 	stopc     chan struct{}
 
 	// Only thisNode and anyNode are guaranteed to be nonzero at all times.
-	thisNode    uint32
-	leftNode    uint32
-	left2ndNode uint32
-	rightNode   uint32
-	anyNode     uint32
+	thisNode    Addr
+	leftNode    Addr
+	left2ndNode Addr
+	rightNode   Addr
+	anyNode     Addr
 
 	udp *UDPService
 
@@ -105,7 +108,7 @@ type Node struct {
 	toSend          chan *Message
 	toForward       chan *Message
 
-	deadNodes chan uint32
+	deadNodes chan Addr
 
 	aliveTimer     *SafeTimer
 	kickTimer      *SafeTimer
@@ -128,9 +131,8 @@ func (n *Node) Start() error {
 			return err
 		}
 
-		n.thisNode = NetworkAddr()
-		n.anyNode = BroadcastAddr()
-		if n.thisNode == 0 && n.anyNode == 0 {
+		n.thisNode, n.anyNode = NetworkAddrs()
+		if n.thisNode == nil || n.anyNode == nil {
 			return nil
 		}
 
@@ -147,7 +149,7 @@ func (n *Node) Start() error {
 		n.toSend = make(chan *Message, bufferSize)
 		n.toForward = make(chan *Message, bufferSize)
 
-		n.deadNodes = make(chan uint32, bufferSize)
+		n.deadNodes = make(chan Addr, bufferSize)
 
 		n.stopc = make(chan struct{})
 
@@ -192,11 +194,11 @@ func (n *Node) SendMessage(msg *Message) {
 	n.toSend <- msg
 }
 
-func (n *Node) Addr() uint32 {
+func (n *Node) Addr() Addr {
 	return n.thisNode
 }
 
-func (n *Node) GetDeadNodeAddr() uint32 {
+func (n *Node) GetDeadNodeAddr() Addr {
 	return <-n.deadNodes
 }
 
@@ -220,8 +222,8 @@ func (n *Node) maintainNetwork() {
 					re.timer.SafeReset(re.resendInterval)
 				} else {
 					n.removeResender(re)
-					n.leftNode = 0
-					n.rightNode = 0
+					n.leftNode = nil
+					n.rightNode = nil
 					n.update()
 				}
 			}
@@ -232,7 +234,8 @@ func (n *Node) maintainNetwork() {
 				n.leftIsAlive = false
 				n.left2ndIsAlive = false
 				n.sendData(n.leftNode, PING, nil)
-				if n.left2ndNode != 0 && n.left2ndNode != n.thisNode {
+				if n.left2ndNode != nil &&
+					!bytes.Equal(n.left2ndNode, n.thisNode) {
 					n.sendData(n.left2ndNode, PING, nil)
 				}
 				n.kickTimer.SafeReset(kickTime)
@@ -241,14 +244,19 @@ func (n *Node) maintainNetwork() {
 		case <-n.kickTimer.C:
 			n.kickTimer.Seen()
 			if n.connected {
-				if n.leftIsAlive &&
-					(n.left2ndIsAlive || n.left2ndNode == n.thisNode) {
-					// Either both nodes on the left are alive or the network
-					// consists of only two nodes and the other one is alive.
+				if n.leftIsAlive && (n.left2ndIsAlive ||
+					bytes.Equal(n.left2ndNode, n.thisNode)) {
+					// Either both nodes on the
+					// left are alive or the
+					// network consists of only
+					// two nodes and the other one
+					// is alive.
 					n.aliveTimer.SafeReset(aliveTime)
 				} else {
-					// Either one or both of the other nodes are dead. See if we
-					// can restore the connection.
+					// Either one or both of the
+					// other nodes are dead. See
+					// if we can restore the
+					// connection.
 					n.restoreNetwork()
 				}
 			}
@@ -273,13 +281,13 @@ func (n *Node) maintainNetwork() {
 
 func (n *Node) restoreNetwork() error {
 	if (!n.leftIsAlive && !n.left2ndIsAlive) &&
-		(n.left2ndNode == 0 || n.left2ndNode == n.thisNode) {
+		(n.left2ndNode == nil || bytes.Equal(n.left2ndNode, n.thisNode)) {
 		// This happens when there are only two nodes in the
 		// network and when left2ndNode has not yet been updated
 		// by leftNode. Thus since leftIsAlive is false there is
 		// no way of recovering and we have no choice but to
 		// disconnect.
-		n.leftNode = 0
+		n.leftNode = nil
 		n.update()
 		return errors.New("Not able to restore connectivity.")
 	} else if !n.leftIsAlive && n.left2ndIsAlive {
@@ -297,27 +305,29 @@ func (n *Node) restoreNetwork() error {
 		// for forwarding messages, but we can't start pinging it
 		// before it is set correctly. One solution is to set
 		// it to zero and don't ping untill it is set by an UPDATE.
-		n.left2ndNode = 0
+		n.left2ndNode = nil
 		n.sendData(n.leftNode, GET, nil)
 
-		n.addResender(NewMessage(KICK, &KickData{
+		// Create and send a kick message.
+		var data [32]byte
+		kd := KickData{
 			deadNode:   deadNode,
 			senderNode: n.thisNode,
-		}), kickResendInterval)
+		}
+		Pack(data[:], "16b16b", kd.deadNode, n.thisNode)
+		n.addResender(NewMessage(KICK, data[:]), kickResendInterval)
 
 		n.aliveTimer.SafeReset(aliveTime)
 		return nil
-	} else {
-		fmt.Println("Unknown error.")
-		fmt.Printf("leftIsAlive: %v\nn.left2ndNode == n.thisNode: %v\nn.left2ndIsAlive: %v\n",
-			n.leftIsAlive, n.left2ndNode == n.thisNode, n.left2ndIsAlive)
 	}
 	return errors.New("Not able to restore connectivity.")
 }
 
 func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	msg := new(Message)
-	msg.Decode(umsg.payload[:])
+	Unpack(umsg.payload, "ubb", &msg.ID, &msg.Type, &msg.ReadCount)
+	nc := copy(msg.buf[:], umsg.payload[8:])
+	msg.Data = msg.buf[:nc]
 
 	if msg.ReadCount > maxReadCount {
 		return
@@ -326,7 +336,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 
 	switch msg.Type {
 	case BROADCAST:
-		if umsg.from != n.thisNode {
+		if !bytes.Equal(umsg.from, n.thisNode) {
 			var hd HelloData
 			if n.connected {
 				hd.newRight = n.rightNode
@@ -348,14 +358,15 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	case HELLO:
 		if !n.connected {
 			var hd HelloData
-			hd.Decode(msg.Data[:])
+			Unpack(msg.Data, "16b16b16b",
+				hd.newRight, hd.newLeft, hd.newLeft2nd)
 
 			n.rightNode = hd.newRight
 			n.leftNode = hd.newLeft
 			n.left2ndNode = hd.newLeft2nd
 			n.update()
-			
-			if hd.newRight == hd.newLeft {
+
+			if bytes.Equal(hd.newRight, hd.newLeft) {
 				n.sendData(n.leftNode, UPDATE, &UpdateData{
 					right:   n.thisNode,
 					left:    n.thisNode,
@@ -366,29 +377,37 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 					left:    n.thisNode,
 					left2nd: n.leftNode,
 				})
-				n.sendData(n.leftNode, UPDATE, &UpdateData{right: n.thisNode})
+				n.sendData(n.leftNode, UPDATE, &UpdateData{
+					right: n.thisNode})
 			}
-			// This connection protocol works perfectly if all messages are received.
-			// TODO: What happens if one or both UPDATE messages never arrive?
+			// This connection protocol works perfectly if
+			// all messages are received.  TODO: What
+			// happens if one or both UPDATE messages
+			// never arrive? Maybe this could be solved by
+			// using an acknowledge message to respond to
+			// updates when a node is connecting.
 		}
 
 	case UPDATE:
 		var ud UpdateData
-		ud.Decode(msg.Data[:])
-		if ud.right != 0 {
+		Unpack(msg.Data, "16b16b16b",
+			ud.right, ud.left, ud.left2nd)
+
+		if ud.right != nil {
 			n.rightNode = ud.right
 		}
-		if ud.left != 0 {
+		if ud.left != nil {
 			n.leftNode = ud.right
 		}
-		if ud.left2nd != 0 {
+		if ud.left2nd != nil {
 			n.left2ndNode = ud.left2nd
 		}
 		n.update()
 
 	case GET:
 		if n.connected {
-			n.sendData(umsg.from, UPDATE, &UpdateData{left2nd: n.leftNode})
+			n.sendData(umsg.from, UPDATE,
+				&UpdateData{left2nd: n.leftNode})
 		}
 
 	case PING:
@@ -398,10 +417,9 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 
 	case ALIVE:
 		if n.connected {
-			switch umsg.from {
-			case n.leftNode:
+			if bytes.Equal(umsg.from, n.leftNode) {
 				n.leftIsAlive = true
-			case n.left2ndNode:
+			} else if bytes.Equal(umsg.from, n.left2ndNode) {
 				n.left2ndIsAlive = true
 			}
 		}
@@ -409,7 +427,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	case KICK:
 		if n.connected {
 			var kick KickData
-			kick.Decode(msg.Data[:])
+			Unpack(msg.Data, "16b16b", kick.deadNode, kick.senderNode)
 
 			select {
 			case n.deadNodes <- kick.deadNode:
@@ -420,7 +438,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 
 	// User-defined message type
 	if msg.Type >= 5 {
-		if n.connected && umsg.from == n.leftNode {
+		if n.connected && bytes.Equal(umsg.from, n.leftNode) {
 			var c chan *Message
 			if re, ok := n.resenders[msg.ID]; ok {
 				c = n.fromUserToUser
@@ -465,30 +483,46 @@ func (n *Node) removeResender(re *Resender) {
 	delete(n.resenders, re.msg.ID)
 }
 
-func (n *Node) sendData(to uint32, mtype uint32, data EncoderDecoder) {
+func (n *Node) sendData(to Addr, mtype uint32, data interface{}) {
 	umsg := &UDPMessage{to: to, from: n.thisNode}
-	binary.BigEndian.PutUint32(umsg.payload[:], rand.Uint32())
-	binary.BigEndian.PutUint32(umsg.payload[4:], mtype)
+	Pack(umsg.buf[:], "ub3_", rand.Uint32(), mtype)
+	umsg.payload = umsg.buf[:8]
 	if data != nil {
-		data.Encode(umsg.payload[16:])
+		var np int
+		switch d := data.(type) {
+		case *HelloData:
+			np, _ = Pack(umsg.buf[8:], "16b16b16b",
+				d.newRight, d.newLeft, d.newLeft2nd)
+		case *UpdateData:
+			np, _ = Pack(umsg.buf[8:], "16b16b16b",
+				d.right, d.left, d.left2nd)
+		case *KickData:
+			np, _ = Pack(umsg.buf[8:], "16b16b",
+				d.deadNode, d.senderNode)
+		default:
+			return
+		}
+		umsg.payload = umsg.buf[:np+8]
 	}
 	n.udp.Send(umsg)
 }
 
 func (n *Node) forwardMsg(msg *Message) {
-	umsg := new(UDPMessage)
-	umsg.from = n.thisNode
-	umsg.to = n.rightNode
-	msg.Encode(umsg.payload[:])
+	umsg := &UDPMessage{to: n.rightNode, from: n.thisNode}
+
+	Pack(umsg.buf[:], "ubb", msg.ID, msg.Type, msg.ReadCount)
+	nc := copy(umsg.buf[8:], msg.Data)
+
+	umsg.payload = umsg.buf[:nc+8]
 	n.udp.Send(umsg)
 }
 
 func (n *Node) update() {
-	if n.leftNode == 0 || n.rightNode == 0 {
+	if n.leftNode == nil || n.rightNode == nil {
 		n.connected = false
-		n.leftNode = 0
-		n.rightNode = 0
-		n.left2ndNode = 0
+		n.leftNode = nil
+		n.rightNode = nil
+		n.left2ndNode = nil
 		n.broadcastTimer.SafeReset(broadcastTime)
 	} else if !n.connected {
 		n.connected = true
