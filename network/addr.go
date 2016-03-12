@@ -4,12 +4,21 @@ import (
 	"net"
 )
 
+type Config struct {
+	Interface string
+	UseIPv6 bool
+}
+
+func LoadConfig(conf *Config) {
+	config = *conf
+}
+
 // The Addr type is used to identify nodes and can be easliy converted
 // to net.IP. It should always be 16 bytes long irregardless of IP version.
 type Addr []byte
 
 func NetworkAddr() Addr {
-	ifi, err := net.InterfaceByName("en0")
+	ifi, err := net.InterfaceByName(config.Interface)
 	if err != nil {
 		return nil
 	}
@@ -32,7 +41,7 @@ func NetworkAddr() Addr {
 }
 
 func BroadcastAddr() Addr {
-	ifi, err := net.InterfaceByName("en0")
+	ifi, err := net.InterfaceByName(config.Interface)
 	if err != nil {
 		return nil
 	}
