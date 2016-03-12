@@ -2,34 +2,60 @@ package network
 
 import (
 	"net"
-	"fmt"
 )
 
 // The Addr type is used to identify nodes and can be easliy converted
 // to net.IP. It should always be 16 bytes long irregardless of IP version.
 type Addr []byte
 
-// Return the IPv6 address of this machine.
-func NetworkAddrs() (Addr, Addr) {
-	iface, err := net.InterfaceByName("en0")
+func NetworkAddr() Addr {
+	ifi, err := net.InterfaceByName("en0")
 	if err != nil {
-		return nil, nil
+		return nil
 	}
-	
-	addrs, err := iface.Addrs()
+
+	addrs, err := ifi.Addrs()
 	if err != nil {
-		return nil, nil
+		return nil
 	}
-	
+
 	for _, addr := range addrs {
-		fmt.Println(addr)
-		//if ipnet, ok := addr.(*net.IPNet); ok {
-		//	if ipnet.IP.IsLoopback() {
-		//		continue
-		//	}
-		//	fmt.Println(ipnet.IP)
-		//}
+		ipnet, ok := addr.(*net.IPNet)
+		if ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				return Addr(ipnet.IP.To16())
+			}
+		}
 	}
-	
-	return nil, nil
+
+	return nil
+}
+
+func BroadcastAddr() Addr {
+	ifi, err := net.InterfaceByName("en0")
+	if err != nil {
+		return nil
+	}
+
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return nil
+	}
+
+	for _, addr := range addrs {
+		ipnet, isIPNet := addr.(*net.IPNet)
+		isBroadcast := (ifi.Flags&net.FlagBroadcast != 0)
+		isIPv4 := (ipnet.IP.To4() != nil)
+		if isIPNet && isIPv4 && isBroadcast {
+			ip := ipnet.IP.To16()
+			mask := net.IP(ipnet.Mask).To16()
+			ip[12] |= ^mask[12]
+			ip[13] |= ^mask[13]
+			ip[14] |= ^mask[14]
+			ip[15] |= ^mask[15]
+			return Addr(ip) 
+		}
+	}
+
+	return nil
 }

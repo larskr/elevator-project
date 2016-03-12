@@ -21,6 +21,11 @@ func Pack(p []byte, format string, data ...interface{}) (n int, err error) {
 			binary.BigEndian.PutUint32(p, v)
 			p = p[4:]
 			n += 4
+		case c == 'b' && prefix == 1:
+			v := data[k].(uint8)
+			p[0] = v
+			p = p[1:]
+			n += 1
 		case c == 'b' && prefix > 1:
 			v := data[k].([]uint8)
 			copy(p, v[:prefix])
@@ -58,6 +63,11 @@ func Unpack(p []byte, format string, data ...interface{}) (n int, err error) {
 			*v = binary.BigEndian.Uint32(p)
 			p = p[4:]
 			n += 4
+		case c == 'b' && prefix == 1:
+			v := data[k].(*uint8)
+			*v = p[0]
+			p = p[1:]
+			n += 1
 		case c == 'b' && prefix > 1:
 			v := data[k].([]uint8)
 			copy(v, p[:prefix])

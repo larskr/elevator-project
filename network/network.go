@@ -92,7 +92,7 @@ type Node struct {
 	running   bool
 	stopc     chan struct{}
 
-	// Only thisNode and anyNode are guaranteed to be nonzero at all times.
+	// Only thisNode and anyNode are guaranteed to be nonnil at all times.
 	thisNode    Addr
 	leftNode    Addr
 	left2ndNode Addr
@@ -131,7 +131,8 @@ func (n *Node) Start() error {
 			return err
 		}
 
-		n.thisNode, n.anyNode = NetworkAddrs()
+		n.thisNode = NetworkAddr()
+		n.anyNode = BroadcastAddr()
 		if n.thisNode == nil || n.anyNode == nil {
 			return nil
 		}
@@ -198,7 +199,7 @@ func (n *Node) Addr() Addr {
 	return n.thisNode
 }
 
-func (n *Node) GetDeadNodeAddr() Addr {
+func (n *Node) GetDeadNode() Addr {
 	return <-n.deadNodes
 }
 

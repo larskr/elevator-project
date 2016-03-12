@@ -1,8 +1,8 @@
 package network
 
 import (
-	"net"
 	"fmt"
+	"net"
 )
 
 const (
@@ -12,9 +12,9 @@ const (
 )
 
 type UDPMessage struct {
-	from    Addr
-	to      Addr
-	buf     [maxPayloadLength]byte
+	from Addr
+	to   Addr
+	buf  [maxPayloadLength]byte
 
 	payload []byte
 }
@@ -29,12 +29,12 @@ type UDPService struct {
 
 func NewUDPService() (*UDPService, error) {
 	addr := net.UDPAddr{
-		IP:   net.IPv6unspecified,
+		IP:   net.IPv4zero,
 		Port: UDPPort,
 	}
-	laddr, _ := NetworkAddrs()
-	
-	conn, err := net.ListenUDP("udp6", &addr)
+	laddr := NetworkAddr()
+
+	conn, err := net.ListenUDP("udp4", &addr)
 	if err != nil {
 		return nil, err
 	}
@@ -42,9 +42,9 @@ func NewUDPService() (*UDPService, error) {
 		conn:     conn,
 		receivec: make(chan *UDPMessage, UDPBufferSize),
 		sendc:    make(chan *UDPMessage, UDPBufferSize),
-		addr:    laddr,
+		addr:     laddr,
 	}
-	
+
 	go s.receiveLoop()
 	go s.sendLoop()
 
@@ -63,7 +63,7 @@ func (s *UDPService) Receive() *UDPMessage {
 func (s *UDPService) receiveLoop() {
 	for {
 		umsg := new(UDPMessage)
-		umsg.to = s.addr		
+		umsg.to = s.addr
 		n, raddr, err := s.conn.ReadFromUDP(umsg.buf[:])
 		if n == 0 || err != nil {
 			continue

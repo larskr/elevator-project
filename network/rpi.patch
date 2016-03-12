@@ -1,0 +1,22 @@
+diff --git a/network/addr.go b/network/addr.go
+index 9bac373..97daafe 100644
+--- a/network/addr.go
++++ b/network/addr.go
+@@ -18,7 +18,7 @@ func Uint32ToIP(u uint32) net.IP {
+ }
+ 
+ func NetworkAddr() uint32 {
+-	ifi, err := net.InterfaceByName("en0")
++	ifi, err := net.InterfaceByName("wlan0")
+ 	if err != nil {
+ 		return 0
+ 	}
+@@ -41,7 +41,7 @@ func NetworkAddr() uint32 {
+ }
+ 
+ func BroadcastAddr() uint32 {
+-	ifi, err := net.InterfaceByName("en0")
++	ifi, err := net.InterfaceByName("wlan0")
+ 	if err != nil {
+ 		return 0
+ 	}

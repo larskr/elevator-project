@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"net"
 )
 
 func TestMain(m *testing.M) {
@@ -13,7 +14,8 @@ func TestMain(m *testing.M) {
 		fmt.Println(err)
 	}
 
-	NetworkAddrs()
+	fmt.Println(net.IP(NetworkAddr()))
+	fmt.Println(net.IP(BroadcastAddr()))
 	
 	//fmt.Println(node.IsConnected())
 	
