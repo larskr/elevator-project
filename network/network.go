@@ -388,10 +388,21 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 			n.updateState(connected)
 
 			if hd.newRight == hd.newLeft {
+				// two disconnected nodes are connecting
 				n.sendData(n.leftNode, UPDATE, &updateData{
 					right:   n.thisNode,
 					left:    n.thisNode,
 					left2nd: umsg.from,
+				})
+			} else if hd.newRight == hd.newLeft2nd {
+				// connecting to a connected doublet
+				n.sendData(n.rightNode, UPDATE, &updateData{
+					left:    n.thisNode,
+					left2nd: n.leftNode,
+				})
+				n.sendData(n.leftNode, UPDATE, &updateData{
+					right: n.thisNode,
+					left2nd: n.thisNode,
 				})
 			} else {
 				n.sendData(n.rightNode, UPDATE, &updateData{
@@ -418,7 +429,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 			n.rightNode = ud.right
 		}
 		if !ud.left.IsZero() {
-			n.leftNode = ud.right
+			n.leftNode = ud.left
 		}
 		if !ud.left2nd.IsZero() {
 			n.left2ndNode = ud.left2nd
