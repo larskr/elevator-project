@@ -4,43 +4,26 @@ import (
 	"time"
 )
 
-// SafeTimer behaves differently from time.Timer because it will
-// clear the channel when reset.
-type SafeTimer struct {
-	*time.Timer
-	seen bool
+// A more predictable timer than time.Timer.
+type Timer struct {
+	deadline time.Time
+	stopped  bool
 }
 
-// Allocates and starts a new SafeTimer.
-func NewSafeTimer(d time.Duration) *SafeTimer {
-	return &SafeTimer{Timer: time.NewTimer(d)}
-}
-
-// Seen must be called after receiving from the channel. If this is
-// not done SafeReset will deadlock.
-func (t *SafeTimer) Seen() {
-	t.seen = true
-}
-
-// SafeReset clears the channel and resets the timer.
-func (t *SafeTimer) SafeReset(d time.Duration) bool {
-	ret := t.Stop()
-	if !ret && !t.seen {
-		<-t.C
-	}
-	t.Reset(d)
-	t.seen = false
+// Reset returns true if the timer has not timed out, and false if it
+// has timed out or been stopped.
+func (t *Timer) Reset(d time.Duration) bool {
+	ret := time.Now().Before(t.deadline) && !t.stopped
+	t.stopped = false
+	t.deadline = time.Now().Add(d)
 	return ret
 }
 
-func (t *SafeTimer) SafeStop() bool {
-	ret := t.Stop()
-	if !ret && !t.seen {
-		<-t.C
-	}
-	t.seen = false
-	return ret
+func (t *Timer) Stop() bool {
+	t.stopped = true
+	return time.Now().Before(t.deadline)
 }
 
-
-
+func (t *Timer) HasTimedOut() bool {
+	return time.Now().After(t.deadline) && !t.stopped
+}

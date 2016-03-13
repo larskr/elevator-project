@@ -8,8 +8,8 @@ package network
 
 import (
 	"errors"
-	"log"
 	"fmt"
+	"log"
 	"math/rand"
 	"time"
 )
@@ -87,7 +87,6 @@ type kickData struct {
 
 type resender struct {
 	msg            *Message
-	timer          *SafeTimer
 	resendInterval time.Duration
 	triesLeft      int
 	stopc          chan struct{}
@@ -126,12 +125,12 @@ type Node struct {
 	deadNodes chan Addr
 
 	// Timers for keeping track of the two next nodes on the left.
-	aliveTimer     *SafeTimer
-	kickTimer      *SafeTimer
+	aliveTimer     Timer
+	kickTimer      Timer
 	leftIsAlive    bool
 	left2ndIsAlive bool
-	
-	broadcastTimer *SafeTimer
+
+	broadcastTimer Timer
 
 	// Note: The map datatype in Go is not thread-safe. In this
 	// case access is controlled by the for/select loop in maintainNetwork.
@@ -174,9 +173,6 @@ func (n *Node) Start() error {
 		if err != nil {
 			return err
 		}
-		n.aliveTimer = NewSafeTimer(aliveTime)
-		n.kickTimer = NewSafeTimer(kickTime)
-		n.broadcastTimer = NewSafeTimer(broadcastTime)
 
 		go n.maintainNetwork()
 		n.updateState(disconnected)
@@ -230,31 +226,9 @@ func (n *Node) GetDeadNode() Addr {
 
 func (n *Node) maintainNetwork() {
 	for {
-		select {
-		case umsg := <-n.udp.receivec:
-			n.processUDPMessage(umsg)
+		if n.state == connected || n.state == detached2ndLeft {
 
-		case msg := <-n.toForward:
-			n.forwardMsg(msg)
-
-		case msg := <-n.toSend:
-			n.addResender(msg, msgResendInterval)
-
-		case ID := <-n.resenderTimedOut:
-			if re, ok := n.resenders[ID]; ok {
-				if re.triesLeft > 0 {
-					n.forwardMsg(re.msg)
-					re.triesLeft--
-					re.timer.SafeReset(re.resendInterval)
-				} else {
-					n.removeResender(re)
-					n.updateState(disconnected)
-				}
-			}
-
-		case <-n.aliveTimer.C:
-			n.aliveTimer.Seen()
-			if n.state == connected {
+			if n.aliveTimer.HasTimedOut() {
 				n.leftIsAlive = false
 				n.left2ndIsAlive = false
 				n.sendData(n.leftNode, PING, nil)
@@ -262,17 +236,15 @@ func (n *Node) maintainNetwork() {
 					n.left2ndNode != n.thisNode {
 					n.sendData(n.left2ndNode, PING, nil)
 				}
-				n.kickTimer.SafeReset(kickTime)
+				n.kickTimer.Reset(kickTime)
 			}
 
-		case <-n.kickTimer.C:
-			n.kickTimer.Seen()
-			if n.state == connected {
+			if n.kickTimer.HasTimedOut() {
 				if n.leftIsAlive {
 					// Since kick timer expired left2ndNode
 					// must be dead, but that is leftNode's
 					// responsibility so we don't care.
-					n.aliveTimer.SafeReset(aliveTime)
+					n.aliveTimer.Reset(aliveTime)
 				} else {
 					// Either one or both of the
 					// other nodes are dead. See
@@ -280,23 +252,41 @@ func (n *Node) maintainNetwork() {
 					// connection.
 					n.restoreNetwork()
 				}
-				n.leftIsAlive = false
-				n.left2ndIsAlive = false
 			}
 
-		case <-n.broadcastTimer.C:
-			n.broadcastTimer.Seen()
-			if n.state == disconnected {
+		} else {
+
+			if n.broadcastTimer.HasTimedOut() {
 				n.sendData(n.anyNode, BROADCAST, nil)
-				n.broadcastTimer.SafeReset(broadcastTime)
+				n.broadcastTimer.Reset(broadcastTime)
 			}
 
+		}
+
+		select {
+		case umsg := <-n.udp.receivec:
+			n.processUDPMessage(umsg)
+		case msg := <-n.toForward:
+			n.forwardMsg(msg)
+		case msg := <-n.toSend:
+			n.addResender(msg, msgResendInterval)
+		case ID := <-n.resenderTimedOut:
+			if re, ok := n.resenders[ID]; ok {
+				if re.triesLeft > 0 {
+					n.forwardMsg(re.msg)
+					re.triesLeft--
+				} else {
+					n.removeResender(re)
+					n.updateState(disconnected)
+				}
+			}
 		case <-n.stopc:
 			n.state = stopped
 			for _, re := range n.resenders {
 				n.removeResender(re)
 			}
 			return
+		default: // don't block
 		}
 	}
 }
@@ -351,7 +341,7 @@ func (n *Node) restoreNetwork() error {
 		Pack(data[:], "16b16b", kd.deadNode[:], n.thisNode[:])
 		n.addResender(NewMessage(KICK, data[:]), kickResendInterval)
 
-		n.aliveTimer.SafeReset(aliveTime)
+		n.aliveTimer.Reset(aliveTime)
 		return nil
 	} else {
 		// This should never happen.
@@ -417,7 +407,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 					left2nd: n.leftNode,
 				})
 				n.sendData(n.leftNode, UPDATE, &updateData{
-					right: n.thisNode,
+					right:   n.thisNode,
 					left2nd: n.thisNode,
 				})
 			} else {
@@ -480,12 +470,10 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 				// all good
 				if ok := n.kickTimer.Stop(); !ok {
 					// This should never happen.
-					log.Fatalf("Kick timer has been stopped"+
+					log.Fatalf("Kick timer has been stopped" +
 						" after it expired.\n")
 				}
-				n.aliveTimer.SafeReset(aliveTime)
-				n.leftIsAlive = false
-				n.left2ndIsAlive = false
+				n.aliveTimer.Reset(aliveTime)
 			}
 		}
 
@@ -525,20 +513,20 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 
 func (n *Node) addResender(msg *Message, resendInterval time.Duration) {
 	re := &resender{
-		msg:       msg,
-		timer:     NewSafeTimer(resendInterval),
-		triesLeft: maxResendCount,
-		stopc:     make(chan struct{}),
+		msg:            msg,
+		resendInterval: resendInterval,
+		triesLeft:      maxResendCount,
+		stopc:          make(chan struct{}),
 	}
 	n.resenders[msg.ID] = re
 
 	go func(n *Node, msg *Message) {
 		for {
+			timeOut := time.After(resendInterval)
 			select {
 			case <-re.stopc:
 				return
-			case <-re.timer.C:
-				re.timer.Seen()
+			case <-timeOut:
 				n.resenderTimedOut <- msg.ID
 			}
 		}
@@ -595,11 +583,12 @@ func (n *Node) updateState(s nodeState) {
 
 		log.Printf("Node connected as:")
 		fmt.Printf("                    %v -> \x1b[35m%v\x1b[m -> %v -> %v\n",
-			n.rightNode, n.thisNode, n.leftNode, n.left2ndNode);
-		
+			n.rightNode, n.thisNode, n.leftNode, n.left2ndNode)
+
 		n.state = connected
-		n.aliveTimer.SafeReset(aliveTime)
-		n.broadcastTimer.SafeStop()
+		n.aliveTimer.Reset(aliveTime)
+		n.kickTimer.Stop()
+		n.broadcastTimer.Stop()
 	case disconnected:
 		// Setting these to zero should not be necessary, but
 		// useful for debugging because we can detect if a
@@ -608,12 +597,12 @@ func (n *Node) updateState(s nodeState) {
 		n.rightNode.SetZero()
 		n.left2ndNode.SetZero()
 
-		log.Printf("Node was disconnected.\n")
-		
+		log.Printf("Node is disconnected.\n")
+
 		n.state = disconnected
-		n.broadcastTimer.SafeReset(broadcastTime)
-		n.aliveTimer.SafeStop()
-		n.kickTimer.SafeStop()
+		n.broadcastTimer.Reset(broadcastTime)
+		n.aliveTimer.Stop()
+		n.kickTimer.Stop()
 	case detached2ndLeft:
 		n.left2ndNode.SetZero()
 		n.state = detached2ndLeft
