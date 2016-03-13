@@ -1,8 +1,6 @@
 #!/usr/bin/env sh
 
-interface=""
-read_file=""
-write_file=""
+interface="en0"
 
 if [ $# -eq 0 ]
 then
@@ -14,12 +12,14 @@ fi
 while [ $# -gt 0 ]; do
     case $1
     in
-	-i) interface=$2;;
-	-r) read_file=$2;;
-	-w) write_file=$2;;
+	-i) interface=$2; shift; shift;;
+	-r) read_file=$2; shift; shift;;
+	-w) write_file=$2; shift; shift;;
+	-v) filter="-v f='0|1|2|3|6'"; shift;;
+	-vv) filter="-v show_all=1"; shift;;
+	-f) filter="-v f=$2|"; shift; shift;;
+	-X) hex="-v hexdump=1"; shift;;
     esac
-    shift
-    shift
 done
 
 if [ "$read_file" != "" ] && [ "$write_file" != "" ]; then
@@ -31,8 +31,6 @@ if [ "$read_file" != "" ]; then
     options="-r $read_file";
 elif [ "$write_file" != "" ]; then
     options="-w $write_file";
-else
-    options="";
 fi
 
-tcpdump -i $interface udp port 2048 -n -l -vv -X $options | gawk -f monitor-network.awk;
+tcpdump -i $interface udp port 2048 -n -l -vv -X $options | gawk -f monitor-network.awk $hex $filter;

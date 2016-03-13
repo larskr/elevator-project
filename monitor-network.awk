@@ -8,6 +8,18 @@ BEGIN {
 	types[3] = "GET"; types[4] = "PING"; types[5] = "ALIVE"; types[6] = "KICK";
 
 	next_color = 3;
+	if ( f != "" ) {
+		split(f, filter, "|");
+	}
+}
+
+function find(item, array) {
+	for (i=1; i<length(array); i++) {
+		if (int(item) == array[i]) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 function hex_read_byte(str, pos) {
@@ -65,7 +77,7 @@ function sprintf_msg(from, to, id, type, read_count, data) {
 	pad = substr("            ", 1, pad_len);
 	decoded_msg = sprintf("(id %10d, type %d, read_count %2d) %s",\
 			      id, type, read_count, types[type]);
-	if (type == 0 || type == 3 || type == 4  || type == 5) {
+	if (length(data) != 0 && (type == 0 || type == 3 || type == 4  || type == 5)) {
 		return sprintf("%s%s%s", to_from_str, pad, decoded_msg)
 	} else {
 		return sprintf("%s%s%s\n             %s", to_from_str, pad,\
@@ -87,25 +99,63 @@ function sprintf_msg(from, to, id, type, read_count, data) {
 	getline;
 	type = hex_read_byte($2, 1);
 	read_count = hex_read_byte($2, 3);
-	data_length = hex_read_byte($3, 1);
 
-	if (type == 0 || type == 3 || type == 4 || type == 5) {
-		print time " | " sprintf_msg(from, to, id, type, read_count);
-	} else if (type == 1 || type == 2) {
-		getline;
-		data = $2 " " $3;
-		getline;
-		data = data " " $2 " " $3;
-		getline;
-		data = data " " $2 " " $3;
-		print time " | " sprintf_msg(from, to, id, type, read_count, data);
-	} else if (type == 6) {
-		getline;
-		data = $2 " " $3;
-		getline;
-		data = data " " $2 " " $3;
-		print time " | " sprintf_msg(from, to, id, type, read_count, data);
+	# Suppress  messages
+	if (show_all) {
+	} else if (!find(type, filter)) {
+		next;
 	}
-	
+
+	if (hexdump) {
+		data = "";
+		indent = "        ";
+		linecount = 1;
+		chunkcount = 0;
+		split("0,1,2,3,4,5,6,7,8,9", itoa, ",");
+		while(match($0, /0x[0-9a-f]{4,4}:/)) {
+			initfield = linecount == 1 ? 4 : 2;
+			for (field = initfield; field < NF; field++) {
+				if ((chunkcount % 8) == 0) {
+					newline = linecount == 1 ? "" : "\n";
+					data = data newline indent "00"itoa[linecount]"0:  ";
+					linecount++;
+				}
+				data = data $(field) " ";
+				chunkcount++;
+			}
+			if (NF < 10) break;
+			getline;
+		}
+		if (length(data) > 0) {
+			data = data "\n";
+		}
+		to_from_str = sprintf("%s > %s", color_ip(from), color_ip(to));
+		pad_len = 47 - length(to_from_str);
+		pad = substr("            ", 1, pad_len);
+		decoded_msg = sprintf("(id %10d, type %d, read_count %2d) %s", \
+			      id, type, read_count, types[type]);
+		print time " | " sprintf("%s%s%s", to_from_str, pad, decoded_msg);
+		printf("%s", data);
+
+	} else { # print formatted
+		if (type == 0 || type == 3 || type == 4 || type == 5) {
+			print time " | " sprintf_msg(from, to, id, type, read_count);
+		} else if (type == 1 || type == 2) {
+			getline;
+			data = $2 " " $3;
+			getline;
+			data = data " " $2 " " $3;
+			getline;
+			data = data " " $2 " " $3;
+			print time " | " sprintf_msg(from, to, id, type, read_count, data);
+		} else if (type == 6) {
+			getline;
+			data = $2 " " $3;
+			getline;
+			data = data " " $2 " " $3;
+			print time " | " sprintf_msg(from, to, id, type, read_count, data);
+		}
+		
+	}
 	fflush();
 }
