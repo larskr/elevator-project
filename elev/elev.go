@@ -187,8 +187,8 @@ func ReadFloorSensor() int {
 	if config.UseSimulator {
 		sim.conn.Write([]byte{7, 0, 0, 0})
 		sim.conn.Read(sim.buf[:])
-		if sim.buf[0] == 1 {
-			return int(sim.buf[1])
+		if sim.buf[1] == 1 {
+			return int(sim.buf[2])
 		}
 		return -1
 	}
@@ -207,7 +207,7 @@ func ReadFloorSensor() int {
 	}
 }
 
-func ReadStop() int {
+func ReadStopButton() int {
 	if config.UseSimulator {
 		sim.conn.Write([]byte{8, 0, 0, 0})
 		sim.conn.Read(sim.buf[:])

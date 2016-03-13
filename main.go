@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
 	
 	"github.com/BurntSushi/toml"
 
@@ -25,16 +24,13 @@ func main() {
 	elev.LoadConfig(&config.Elevator)
 	network.LoadConfig(&config.Network)
 
-	elev.Init()
-	time.Sleep(time.Second)
-	elev.SetFloorIndicator(0)
-	time.Sleep(2*time.Second)
-	elev.SetFloorIndicator(1)
-	time.Sleep(2*time.Second)
-	elev.SetFloorIndicator(2)
-	time.Sleep(2*time.Second)
+	node := network.NewNode()
+	node.Start()
+	
+	//e := new(Elevator)
+	//e.Start()
 
-	select{}
+	select { }
 	
 	os.Exit(0)
 }

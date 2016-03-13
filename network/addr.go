@@ -2,6 +2,7 @@ package network
 
 import (
 	"net"
+	"fmt"
 )
 
 type Config struct {
@@ -9,46 +10,64 @@ type Config struct {
 	UseIPv6 bool
 }
 
+var config Config
+
 func LoadConfig(conf *Config) {
 	config = *conf
 }
 
 // The Addr type is used to identify nodes and can be easliy converted
-// to net.IP. It should always be 16 bytes long irregardless of IP version.
-type Addr []byte
+// to net.IP.
+type Addr [16]byte
 
-func NetworkAddr() Addr {
+func (a *Addr) IsZero() bool {
+	var zero Addr
+	return *a == zero
+}
+
+func (a *Addr) SetZero() {
+	var zero Addr
+	*a = zero
+}
+
+func (a Addr) String() string {
+	return fmt.Sprintf("%v", net.IP(a[:]))
+}
+
+func NetworkAddr() (ret Addr, err error) {
 	ifi, err := net.InterfaceByName(config.Interface)
 	if err != nil {
-		return nil
+		return
 	}
 
 	addrs, err := ifi.Addrs()
 	if err != nil {
-		return nil
+		return
 	}
 
 	for _, addr := range addrs {
 		ipnet, ok := addr.(*net.IPNet)
 		if ok && !ipnet.IP.IsLoopback() {
 			if ipnet.IP.To4() != nil {
-				return Addr(ipnet.IP.To16())
+				ip := ipnet.IP.To16()
+				copy(ret[:], ip)
+				return
 			}
 		}
 	}
 
-	return nil
+	return
 }
 
-func BroadcastAddr() Addr {
+func BroadcastAddr() (ret Addr, err error) {
 	ifi, err := net.InterfaceByName(config.Interface)
 	if err != nil {
-		return nil
+		return
 	}
 
 	addrs, err := ifi.Addrs()
 	if err != nil {
-		return nil
+		return
 	}
 
 	for _, addr := range addrs {
@@ -62,9 +81,10 @@ func BroadcastAddr() Addr {
 			ip[13] |= ^mask[13]
 			ip[14] |= ^mask[14]
 			ip[15] |= ^mask[15]
-			return Addr(ip) 
+			copy(ret[:], ip)
+			return
 		}
 	}
 
-	return nil
+	return
 }

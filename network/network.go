@@ -7,12 +7,10 @@
 package network
 
 import (
-	"bytes"
 	"errors"
+	"log"
 	"math/rand"
 	"time"
-
-	"ring-network/utils"
 )
 
 const (
@@ -44,6 +42,9 @@ const (
 	KICK      = 0x6 // Inform network that a node has been kicked.
 )
 
+// The Message type is what is packed into and UDP datagram and sent
+// through the network. The Data slice indicates what region of buf
+// that should be sent.
 type Message struct {
 	ID        uint32
 	Type      uint8
@@ -54,6 +55,8 @@ type Message struct {
 	Data []byte // points into buf
 }
 
+// NewMessage allocates and initializes a Message copying from the data
+// slice.
 func NewMessage(mtype uint8, data []byte) *Message {
 	msg := &Message{ID: rand.Uint32(), Type: uint8(mtype)}
 	n := 0
@@ -64,24 +67,24 @@ func NewMessage(mtype uint8, data []byte) *Message {
 	return msg
 }
 
-type HelloData struct {
+type helloData struct {
 	newRight   Addr
 	newLeft    Addr
 	newLeft2nd Addr
 }
 
-type UpdateData struct {
+type updateData struct {
 	right   Addr
 	left    Addr
 	left2nd Addr
 }
 
-type KickData struct {
+type kickData struct {
 	deadNode   Addr
 	senderNode Addr
 }
 
-type Resender struct {
+type resender struct {
 	msg            *Message
 	timer          *SafeTimer
 	resendInterval time.Duration
@@ -89,10 +92,19 @@ type Resender struct {
 	stopc          chan struct{}
 }
 
+type nodeState int
+
+const (
+	connected nodeState = iota
+	disconnected
+	stopped
+	detached2ndLeft
+	ready
+)
+
 type Node struct {
-	connected bool
-	running   bool
-	stopc     chan struct{}
+	state nodeState
+	stopc chan struct{}
 
 	// Only thisNode and anyNode are guaranteed to be nonnil at all times.
 	thisNode    Addr
@@ -121,58 +133,67 @@ type Node struct {
 
 	// Note: The map datatype in Go is not thread-safe. In this
 	// case access is controlled by the for/select loop in maintainNetwork.
-	resenders        map[uint32]*Resender
+	resenders        map[uint32]*resender
 	resenderTimedOut chan uint32
 }
 
+func NewNode() *Node {
+	n := new(Node)
+	n.resenders = make(map[uint32]*resender)
+	n.resenderTimedOut = make(chan uint32, maxResenders)
+
+	n.fromUserToUser = make(chan *Message, bufferSize)
+	n.fromUserToOther = make(chan *Message, bufferSize)
+	n.toSend = make(chan *Message, bufferSize)
+	n.toForward = make(chan *Message, bufferSize)
+
+	n.deadNodes = make(chan Addr, bufferSize)
+
+	n.stopc = make(chan struct{})
+
+	n.updateState(ready)
+	return n
+}
+
 func (n *Node) Start() error {
-	if !n.running {
+	if n.state == ready {
 		var err error
-		n.udp, err = NewUDPService()
+		n.thisNode, err = NetworkAddr()
 		if err != nil {
 			return err
 		}
 
-		n.thisNode = NetworkAddr()
-		n.anyNode = BroadcastAddr()
-		if n.thisNode == nil || n.anyNode == nil {
-			return nil
+		n.anyNode, err = BroadcastAddr()
+		if err != nil {
+			return err
 		}
 
+		n.udp, err = NewUDPService()
+		if err != nil {
+			return err
+		}
 		n.aliveTimer = NewSafeTimer(aliveTime)
 		n.kickTimer = NewSafeTimer(kickTime)
 		n.broadcastTimer = NewSafeTimer(broadcastTime)
 
-		n.resenders = make(map[uint32]*Resender)
-		n.resenderTimedOut = make(chan uint32, maxResenders)
-
-		n.fromUserToUser = make(chan *Message, bufferSize)
-		n.fromUserToOther = make(chan *Message, bufferSize)
-
-		n.toSend = make(chan *Message, bufferSize)
-		n.toForward = make(chan *Message, bufferSize)
-
-		n.deadNodes = make(chan Addr, bufferSize)
-
-		n.stopc = make(chan struct{})
-
 		go n.maintainNetwork()
-		n.running = true
+		n.updateState(disconnected)
+
+		log.Printf("Node is running on %v.\n", n.thisNode)
 	}
 	return nil
 }
 
 func (n *Node) IsRunning() bool {
-	return n.running
+	return n.state != stopped
 }
 
 func (n *Node) IsConnected() bool {
-	return n.connected
+	return n.state == connected || n.state == detached2ndLeft
 }
 
 func (n *Node) Stop() {
 	close(n.stopc)
-	n.running = false
 }
 
 func (n *Node) ReceiveMyMessage() *Message {
@@ -184,14 +205,14 @@ func (n *Node) ReceiveMessage() *Message {
 }
 
 func (n *Node) ForwardMessage(msg *Message) {
-	if msg.Type < 5 {
+	if msg.Type < 16 {
 		return
 	}
 	n.toForward <- msg
 }
 
 func (n *Node) SendMessage(msg *Message) {
-	if msg.Type < 5 {
+	if msg.Type < 16 {
 		return
 	}
 	n.toSend <- msg
@@ -225,20 +246,18 @@ func (n *Node) maintainNetwork() {
 					re.timer.SafeReset(re.resendInterval)
 				} else {
 					n.removeResender(re)
-					n.leftNode = nil
-					n.rightNode = nil
-					n.update()
+					n.updateState(disconnected)
 				}
 			}
 
 		case <-n.aliveTimer.C:
 			n.aliveTimer.Seen()
-			if n.connected {
+			if n.state == connected {
 				n.leftIsAlive = false
 				n.left2ndIsAlive = false
 				n.sendData(n.leftNode, PING, nil)
-				if n.left2ndNode != nil &&
-					!bytes.Equal(n.left2ndNode, n.thisNode) {
+				if n.state != detached2ndLeft &&
+					n.left2ndNode != n.thisNode {
 					n.sendData(n.left2ndNode, PING, nil)
 				}
 				n.kickTimer.SafeReset(kickTime)
@@ -246,9 +265,9 @@ func (n *Node) maintainNetwork() {
 
 		case <-n.kickTimer.C:
 			n.kickTimer.Seen()
-			if n.connected {
+			if n.state == connected {
 				if n.leftIsAlive && (n.left2ndIsAlive ||
-					bytes.Equal(n.left2ndNode, n.thisNode)) {
+					n.left2ndNode == n.thisNode) {
 					// Either both nodes on the
 					// left are alive or the
 					// network consists of only
@@ -266,14 +285,13 @@ func (n *Node) maintainNetwork() {
 
 		case <-n.broadcastTimer.C:
 			n.broadcastTimer.Seen()
-			if !n.connected {
+			if n.state == disconnected {
 				n.sendData(n.anyNode, BROADCAST, nil)
 				n.broadcastTimer.SafeReset(broadcastTime)
 			}
 
 		case <-n.stopc:
-			n.running = false
-			n.connected = false
+			n.state = stopped
 			for _, re := range n.resenders {
 				n.removeResender(re)
 			}
@@ -284,23 +302,22 @@ func (n *Node) maintainNetwork() {
 
 func (n *Node) restoreNetwork() error {
 	if (!n.leftIsAlive && !n.left2ndIsAlive) &&
-		(n.left2ndNode == nil || bytes.Equal(n.left2ndNode, n.thisNode)) {
+		(n.state == detached2ndLeft || n.left2ndNode == n.thisNode) {
 		// This happens when there are only two nodes in the
 		// network and when left2ndNode has not yet been updated
 		// by leftNode. Thus since leftIsAlive is false there is
 		// no way of recovering and we have no choice but to
 		// disconnect.
-		n.leftNode = nil
-		n.update()
+		n.updateState(disconnected)
 		return errors.New("Not able to restore connectivity.")
 	} else if !n.leftIsAlive && n.left2ndIsAlive {
 		// Easy removal of dead node is possible.
 		deadNode := n.leftNode
 		n.leftNode = n.left2ndNode
-		n.sendData(n.rightNode, UPDATE, &UpdateData{
+		n.sendData(n.rightNode, UPDATE, &updateData{
 			left2nd: n.left2ndNode,
 		})
-		n.sendData(n.leftNode, UPDATE, &UpdateData{
+		n.sendData(n.leftNode, UPDATE, &updateData{
 			right: n.thisNode,
 		})
 		// This leaves n.left2ndNode incorrectly pointing to
@@ -308,16 +325,16 @@ func (n *Node) restoreNetwork() error {
 		// for forwarding messages, but we can't start pinging it
 		// before it is set correctly. One solution is to set
 		// it to zero and don't ping untill it is set by an UPDATE.
-		n.left2ndNode = nil
+		n.updateState(detached2ndLeft)
 		n.sendData(n.leftNode, GET, nil)
 
 		// Create and send a kick message.
 		var data [32]byte
-		kd := KickData{
+		kd := kickData{
 			deadNode:   deadNode,
 			senderNode: n.thisNode,
 		}
-		utils.Pack(data[:], "16b16b", kd.deadNode, n.thisNode)
+		Pack(data[:], "16b16b", kd.deadNode[:], n.thisNode[:])
 		n.addResender(NewMessage(KICK, data[:]), kickResendInterval)
 
 		n.aliveTimer.SafeReset(aliveTime)
@@ -328,7 +345,7 @@ func (n *Node) restoreNetwork() error {
 
 func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	msg := new(Message)
-	utils.Unpack(umsg.payload, "ubb", &msg.ID, &msg.Type, &msg.ReadCount)
+	Unpack(umsg.payload, "ubb", &msg.ID, &msg.Type, &msg.ReadCount)
 	nc := copy(msg.buf[:], umsg.payload[8:])
 	msg.Data = msg.buf[:nc]
 
@@ -339,9 +356,9 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 
 	switch msg.Type {
 	case BROADCAST:
-		if !bytes.Equal(umsg.from, n.thisNode) {
-			var hd HelloData
-			if n.connected {
+		if umsg.from != n.thisNode {
+			var hd helloData
+			if n.state == connected {
 				hd.newRight = n.rightNode
 				hd.newLeft = n.thisNode
 				hd.newLeft2nd = n.leftNode
@@ -352,35 +369,35 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 			}
 
 			// Avoid forming disjoint networks at statup.
-			if !n.connected {
+			if n.state == disconnected {
 				time.Sleep(lonelyDelay)
 			}
 			n.sendData(umsg.from, HELLO, &hd)
 		}
 
 	case HELLO:
-		if !n.connected {
-			var hd HelloData
-			utils.Unpack(msg.Data, "16b16b16b",
-				hd.newRight, hd.newLeft, hd.newLeft2nd)
+		if n.state == disconnected {
+			var hd helloData
+			Unpack(msg.Data, "16b16b16b",
+				hd.newRight[:], hd.newLeft[:], hd.newLeft2nd[:])
 
 			n.rightNode = hd.newRight
 			n.leftNode = hd.newLeft
 			n.left2ndNode = hd.newLeft2nd
-			n.update()
+			n.updateState(connected)
 
-			if bytes.Equal(hd.newRight, hd.newLeft) {
-				n.sendData(n.leftNode, UPDATE, &UpdateData{
+			if hd.newRight == hd.newLeft {
+				n.sendData(n.leftNode, UPDATE, &updateData{
 					right:   n.thisNode,
 					left:    n.thisNode,
 					left2nd: umsg.from,
 				})
 			} else {
-				n.sendData(n.rightNode, UPDATE, &UpdateData{
+				n.sendData(n.rightNode, UPDATE, &updateData{
 					left:    n.thisNode,
 					left2nd: n.leftNode,
 				})
-				n.sendData(n.leftNode, UPDATE, &UpdateData{
+				n.sendData(n.leftNode, UPDATE, &updateData{
 					right: n.thisNode})
 			}
 			// This connection protocol works perfectly if
@@ -392,46 +409,51 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 		}
 
 	case UPDATE:
-		var ud UpdateData
-		utils.Unpack(msg.Data, "16b16b16b",
-			ud.right, ud.left, ud.left2nd)
+		var ud updateData
+		Unpack(msg.Data, "16b16b16b",
+			ud.right[:], ud.left[:], ud.left2nd[:])
 
-		if ud.right != nil {
+		if !ud.right.IsZero() {
 			n.rightNode = ud.right
 		}
-		if ud.left != nil {
+		if !ud.left.IsZero() {
 			n.leftNode = ud.right
 		}
-		if ud.left2nd != nil {
+		if !ud.left2nd.IsZero() {
 			n.left2ndNode = ud.left2nd
 		}
-		n.update()
+
+		// A disconnected node should not receive an UPDATE
+		// message unless when two disconnected nodes are
+		// connecting. This change also covers the case where
+		// a node in the detached2ndLeft state receives an UPDATE.
+		n.updateState(connected)
 
 	case GET:
-		if n.connected {
+		if n.state == connected {
 			n.sendData(umsg.from, UPDATE,
-				&UpdateData{left2nd: n.leftNode})
+				&updateData{left2nd: n.leftNode})
 		}
 
 	case PING:
-		if n.connected {
+		if n.state == connected {
 			n.sendData(umsg.from, ALIVE, nil)
 		}
 
 	case ALIVE:
-		if n.connected {
-			if bytes.Equal(umsg.from, n.leftNode) {
+		if n.state == connected {
+			if umsg.from == n.leftNode {
 				n.leftIsAlive = true
-			} else if bytes.Equal(umsg.from, n.left2ndNode) {
+			} else if umsg.from == n.left2ndNode {
 				n.left2ndIsAlive = true
 			}
 		}
 
 	case KICK:
-		if n.connected {
-			var kick KickData
-			utils.Unpack(msg.Data, "16b16b", kick.deadNode,
-				kick.senderNode)
+		if n.state == connected {
+			var kick kickData
+			Unpack(msg.Data, "16b16b", kick.deadNode[:],
+				kick.senderNode[:])
 
 			select {
 			case n.deadNodes <- kick.deadNode:
@@ -441,8 +463,8 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	}
 
 	// User-defined message type
-	if msg.Type >= 5 {
-		if n.connected && bytes.Equal(umsg.from, n.leftNode) {
+	if msg.Type >= 16 {
+		if n.state == connected && umsg.from == n.rightNode {
 			var c chan *Message
 			if re, ok := n.resenders[msg.ID]; ok {
 				c = n.fromUserToUser
@@ -460,7 +482,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 }
 
 func (n *Node) addResender(msg *Message, resendInterval time.Duration) {
-	re := &Resender{
+	re := &resender{
 		msg:       msg,
 		timer:     NewSafeTimer(resendInterval),
 		triesLeft: maxResendCount,
@@ -481,28 +503,28 @@ func (n *Node) addResender(msg *Message, resendInterval time.Duration) {
 	}(n, msg)
 }
 
-func (n *Node) removeResender(re *Resender) {
+func (n *Node) removeResender(re *resender) {
 	// Stop forwarding goroutine.
 	close(re.stopc)
 	delete(n.resenders, re.msg.ID)
 }
 
-func (n *Node) sendData(to Addr, mtype uint32, data interface{}) {
+func (n *Node) sendData(to Addr, mtype uint8, data interface{}) {
 	umsg := &UDPMessage{to: to, from: n.thisNode}
-	utils.Pack(umsg.buf[:], "ub3_", rand.Uint32(), mtype)
+	Pack(umsg.buf[:], "ub3_", rand.Uint32(), mtype)
 	umsg.payload = umsg.buf[:8]
 	if data != nil {
 		var np int
 		switch d := data.(type) {
-		case *HelloData:
-			np, _ = utils.Pack(umsg.buf[8:], "16b16b16b",
-				d.newRight, d.newLeft, d.newLeft2nd)
-		case *UpdateData:
-			np, _ = utils.Pack(umsg.buf[8:], "16b16b16b",
-				d.right, d.left, d.left2nd)
-		case *KickData:
-			np, _ = utils.Pack(umsg.buf[8:], "16b16b",
-				d.deadNode, d.senderNode)
+		case *helloData:
+			np, _ = Pack(umsg.buf[8:], "16b16b16b",
+				d.newRight[:], d.newLeft[:], d.newLeft2nd[:])
+		case *updateData:
+			np, _ = Pack(umsg.buf[8:], "16b16b16b",
+				d.right[:], d.left[:], d.left2nd[:])
+		case *kickData:
+			np, _ = Pack(umsg.buf[8:], "16b16b",
+				d.deadNode[:], d.senderNode[:])
 		default:
 			return
 		}
@@ -512,24 +534,39 @@ func (n *Node) sendData(to Addr, mtype uint32, data interface{}) {
 }
 
 func (n *Node) forwardMsg(msg *Message) {
-	umsg := &UDPMessage{to: n.rightNode, from: n.thisNode}
+	umsg := &UDPMessage{to: n.leftNode, from: n.thisNode}
 
-	utils.Pack(umsg.buf[:], "ubb", msg.ID, msg.Type, msg.ReadCount)
+	Pack(umsg.buf[:], "ubb", msg.ID, msg.Type, msg.ReadCount)
 	nc := copy(umsg.buf[8:], msg.Data)
 
 	umsg.payload = umsg.buf[:nc+8]
 	n.udp.Send(umsg)
 }
 
-func (n *Node) update() {
-	if n.leftNode == nil || n.rightNode == nil {
-		n.connected = false
-		n.leftNode = nil
-		n.rightNode = nil
-		n.left2ndNode = nil
-		n.broadcastTimer.SafeReset(broadcastTime)
-	} else if !n.connected {
-		n.connected = true
+func (n *Node) updateState(s nodeState) {
+	switch s {
+	case connected:
+		// sanity check
+		if n.leftNode.IsZero() || n.rightNode.IsZero() || n.left2ndNode.IsZero() {
+			log.Fatalf("Invalid node state.\n")
+		}
+		
+		n.state = connected
 		n.aliveTimer.SafeReset(aliveTime)
+	case disconnected:
+		// Setting these to zero should not be necessary, but
+		// useful for debugging because we can detect if a
+		// link is not updated when connecting.
+		n.leftNode.SetZero()
+		n.rightNode.SetZero()
+		n.left2ndNode.SetZero()
+		
+		n.state = disconnected
+		n.broadcastTimer.SafeReset(broadcastTime)
+	case detached2ndLeft:
+		n.left2ndNode.SetZero()
+		n.state = detached2ndLeft
+	default:
+		n.state = s
 	}
 }

@@ -1,7 +1,7 @@
+
 package network
 
 import (
-	"fmt"
 	"net"
 )
 
@@ -32,7 +32,6 @@ func NewUDPService() (*UDPService, error) {
 		IP:   net.IPv4zero,
 		Port: UDPPort,
 	}
-	laddr := NetworkAddr()
 
 	conn, err := net.ListenUDP("udp4", &addr)
 	if err != nil {
@@ -42,8 +41,9 @@ func NewUDPService() (*UDPService, error) {
 		conn:     conn,
 		receivec: make(chan *UDPMessage, UDPBufferSize),
 		sendc:    make(chan *UDPMessage, UDPBufferSize),
-		addr:     laddr,
 	}
+
+	s.addr, _ = NetworkAddr()
 
 	go s.receiveLoop()
 	go s.sendLoop()
@@ -68,7 +68,7 @@ func (s *UDPService) receiveLoop() {
 		if n == 0 || err != nil {
 			continue
 		}
-		umsg.from = Addr(raddr.IP.To16())
+		copy(umsg.from[:], raddr.IP.To16())
 		umsg.payload = umsg.buf[:n]
 		s.receivec <- umsg
 	}
@@ -78,10 +78,9 @@ func (s *UDPService) sendLoop() {
 	for {
 		umsg := <-s.sendc
 		addr := net.UDPAddr{
-			IP:   net.IP(umsg.to),
+			IP:   net.IP(umsg.to[:]),
 			Port: UDPPort,
 		}
 		s.conn.WriteToUDP(umsg.payload, &addr)
-		fmt.Println("Sent.")
 	}
 }

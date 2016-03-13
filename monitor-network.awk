@@ -35,22 +35,25 @@ function color_ip(str) {
 }
 
 function sprintf_data(type, data) {
-	gsub(/ /, "", data);
+	gsub(/ /, "", data)
 	if (type == 1) {
 		right = hex_read_ipaddr(data, 1);
 		left = hex_read_ipaddr(data, 9)
 		left2 = hex_read_ipaddr(data, 17);
-		return sprintf("(new_right %s, new_left %s, new_left2 %s)", color_ip(right), color_ip(left), color_ip(left2));
+		return sprintf("(new_right %s, new_left %s, new_left2 %s)",\
+			       color_ip(right), color_ip(left), color_ip(left2));
 	} else if (type == 2) {
 		right = hex_read_ipaddr(data, 1);
 		left = hex_read_ipaddr(data, 9);
 		left2 = hex_read_ipaddr(data, 17);
 		if (right != "0.0.0.0" && left != "0.0.0.0" && left2 !="0.0.0.0") {
-			return sprintf("(set_right %s, set_left %s, set_left2 %s)", color_ip(right), color_ip(left), color_ip(left2));
+			return sprintf("(set_right %s, set_left %s, set_left2 %s)",\
+				       color_ip(right), color_ip(left), color_ip(left2));
 		} else if (right != "0.0.0.0" && left == "0.0.0.0" && left2 == "0.0.0.0") {
 			return sprintf("(set_right %s)", color_ip(as_right));
 		} else if (right == "0.0.0.0" && left != "0.0.0.0" && left2 != "0.0.0.0") {
-			return sprintf("(set_left %s, set_left2 %s)", color_ip(left), color_ip(left2));
+			return sprintf("(set_left %s, set_left2 %s)", color_ip(left),\
+				       color_ip(left2));
 		}
 	} else if (type == 6) {
 		dead = color_ip(hex_read_ipaddr(data, 1));
@@ -66,11 +69,11 @@ function sprintf_msg(from, to, id, type, read_count, data) {
 	pad = substr("            ", 1, pad_len);
 	decoded_msg = sprintf("(id %10d, type %d, read_count %2d) %s",\
 			      id, type, read_count, types[type]);
-	if (type == 0 || type == 4 || type == 3 || type == 5) {
+	if (type == 0 || type == 3 || type == 4  || type == 5) {
 		return sprintf("%s%s%s", to_from_str, pad, decoded_msg)
 	} else {
-		return sprintf("%s%s%s\n    %s %s", to_from_str, pad,\
-			       decoded_msg, data, sprintf_data(type, data));
+		return sprintf("%s%s%s\n             %s", to_from_str, pad,\
+			       decoded_msg, sprintf_data(type, data));
 	}
 }
 
@@ -78,19 +81,34 @@ function sprintf_msg(from, to, id, type, read_count, data) {
 /^[0-9]/{
 	time = substr($0, 1, 11);
 	getline;
+	match($1, /([0-9]+\.){3,3}[0-9]+/)
+	from = substr($1, RSTART, RLENGTH)
+	match($3, /([0-9]+\.){3,3}[0-9]+/)
+	to = substr($3, RSTART, RLENGTH)
 	getline;
 	getline;
-	from =  hex_read_ipaddr($8 $9, 1);
+	id = hex_read_uint32($8 $9, 1);
 	getline;
-	to =  hex_read_ipaddr($2 $3, 1);
-	id =  hex_read_uint32($4 $5, 1);
-	type = hex_read_uint32($6 $7, 1);
-	read_count = hex_read_uint32($8 $9, 1);
-	getline;
-	data = $4 " " $5 " " $6 " " $7 " " $8 " " $9
-	getline;
-	data = data " " $2 " " $3;
+	type = hex_read_byte($2, 1);
+	read_count = hex_read_byte($2, 3);
+	data_length = hex_read_byte($3, 1);
+
+	if (type == 0 || type == 3 || type == 4 || type == 5) {
+		print time " | " sprintf_msg(from, to, id, type, read_count);
+	} else if (type == 1 || type == 2) {
+		getline;
+		data = $2 " " $3;
+		getline;
+		data = data " " $2 " " $3;
+		getline;
+		data = data " " $2 " " $3;
+		print time " | " sprintf_msg(from, to, id, type, read_count, data);
+	} else if (type == 6) {
+		data = $2 " " $3;
+		getline;
+		data = data " " $2 " " $3;
+		print time " | " sprintf_msg(from, to, id, type, read_count, data);
+	}
 	
-	print time " | " sprintf_msg(from, to, id, type, read_count, data);
 	fflush();
 }

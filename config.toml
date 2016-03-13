@@ -2,8 +2,8 @@
 MotorSpeed = 2800
 UseSimulator = true
 SimulatorPort = 15657
-SimulatorIP = "127.0.0.1"
+SimulatorIP = "192.168.1.41"
 
 [network]
+Interface = "en0"
 UseIPv6 = false
-
