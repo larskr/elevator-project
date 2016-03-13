@@ -15,13 +15,12 @@ import (
 )
 
 const (
-	aliveTime          = 50 * time.Millisecond
-	kickTime           = 250 * time.Millisecond
-	//lonelyTime         = 500 * time.Millisecond // => 2 * kickTime
-	broadcastTime      = 500 * time.Millisecond
-	msgResendInterval  = 200 * time.Millisecond
-	kickResendInterval = 20 * time.Millisecond
-	lonelyDelay        = 100 * time.Millisecond
+	aliveTime          = 500 * time.Millisecond
+	kickTime           = 2500 * time.Millisecond
+	broadcastTime      = 5000 * time.Millisecond
+	msgResendInterval  = 2000 * time.Millisecond
+	kickResendInterval = 200 * time.Millisecond
+	lonelyDelay        = 1000 * time.Millisecond
 )
 
 const (
@@ -569,7 +568,7 @@ func (n *Node) sendData(to Addr, mtype uint8, data interface{}) {
 			np, _ = Pack(umsg.buf[8:], "16b16b",
 				d.deadNode[:], d.senderNode[:])
 		default:
-			return
+			log.Printf("Unknown message data.")
 		}
 		umsg.payload = umsg.buf[:np+8]
 	}
@@ -613,6 +612,8 @@ func (n *Node) updateState(s nodeState) {
 		
 		n.state = disconnected
 		n.broadcastTimer.SafeReset(broadcastTime)
+		n.aliveTimer.SafeStop()
+		n.kickTimer.SafeStop()
 	case detached2ndLeft:
 		n.left2ndNode.SetZero()
 		n.state = detached2ndLeft
