@@ -17,6 +17,7 @@ import (
 const (
 	aliveTime          = 50 * time.Millisecond
 	kickTime           = 250 * time.Millisecond
+	lonelyTime         = 500 * time.Millisecond // => 2 * kickTime
 	broadcastTime      = 500 * time.Millisecond
 	msgResendInterval  = 200 * time.Millisecond
 	kickResendInterval = 20 * time.Millisecond
@@ -43,7 +44,7 @@ const (
 	KICK      = 0x6 // Inform network that a node has been kicked.
 )
 
-// The Message type is what is packed into and UDP datagram and sent
+// The Message type is what is packed into the UDP datagram and sent
 // through the network. The Data slice indicates what region of buf
 // that should be sent.
 type Message struct {
@@ -125,11 +126,17 @@ type Node struct {
 
 	deadNodes chan Addr
 
+	// Timers for keeping track of the two next nodes on the left.
 	aliveTimer     *SafeTimer
 	kickTimer      *SafeTimer
 	leftIsAlive    bool
 	left2ndIsAlive bool
 
+	// If node is kicked without knowing it (it may have been busy
+	// and not able to respond within kickTime) this timer will
+	// expire and the node will disconnect.
+	lonelyTimer *SafeTimer
+	
 	broadcastTimer *SafeTimer
 
 	// Note: The map datatype in Go is not thread-safe. In this
@@ -175,6 +182,7 @@ func (n *Node) Start() error {
 		}
 		n.aliveTimer = NewSafeTimer(aliveTime)
 		n.kickTimer = NewSafeTimer(kickTime)
+		n.lonelyTimer = NewSafeTimer(lonelyTime)
 		n.broadcastTimer = NewSafeTimer(broadcastTime)
 
 		go n.maintainNetwork()
@@ -254,8 +262,6 @@ func (n *Node) maintainNetwork() {
 		case <-n.aliveTimer.C:
 			n.aliveTimer.Seen()
 			if n.state == connected {
-				n.leftIsAlive = false
-				n.left2ndIsAlive = false
 				n.sendData(n.leftNode, PING, nil)
 				if n.state != detached2ndLeft &&
 					n.left2ndNode != n.thisNode {
@@ -267,13 +273,10 @@ func (n *Node) maintainNetwork() {
 		case <-n.kickTimer.C:
 			n.kickTimer.Seen()
 			if n.state == connected {
-				if n.leftIsAlive && (n.left2ndIsAlive ||
-					n.left2ndNode == n.thisNode) {
-					// Either both nodes on the
-					// left are alive or the
-					// network consists of only
-					// two nodes and the other one
-					// is alive.
+				if n.leftIsAlive {
+					// Since kick timer expired left2ndNode
+					// must be dead, but that is leftNode's
+					// responsibility so we don't care.
 					n.aliveTimer.SafeReset(aliveTime)
 				} else {
 					// Either one or both of the
@@ -282,6 +285,15 @@ func (n *Node) maintainNetwork() {
 					// connection.
 					n.restoreNetwork()
 				}
+				n.leftIsAlive = false
+				n.left2ndIsAlive = false
+			}
+
+		case <-n.lonelyTimer.C:
+			n.lonelyTimer.Seen()
+			if n.state == connected {
+				// We are not receiving pings from other nodes.
+				n.updateState(disconnected)
 			}
 
 		case <-n.broadcastTimer.C:
@@ -302,10 +314,23 @@ func (n *Node) maintainNetwork() {
 }
 
 func (n *Node) restoreNetwork() error {
-	if (!n.leftIsAlive && !n.left2ndIsAlive) &&
-		(n.state == detached2ndLeft || n.left2ndNode == n.thisNode) {
-		// This happens when there are only two nodes in the
-		// network and when left2ndNode has not yet been updated
+	if !n.leftIsAlive && !n.left2ndIsAlive {
+		// Both nodes on the left are dead. Must disconnect.
+		//
+		// This case also covers the cases where leftNode is
+		// dead and either:
+		//  (a)  n.state == detached2ndLeft
+		// or
+		//  (b)  n.left2ndNode == n.thisNode
+		// is true.
+		//
+		// This is true because left2ndNode is never pinged if
+		// either of these cases are true, so left2ndIsAlive is false
+		// since it is not updated. Also restoreNetwork is only called
+		// when leftIsAlive is false.
+		//
+		// Case (b) happens when there are only two nodes in the
+		// network and case (a) when left2ndNode has not yet been updated
 		// by leftNode. Thus since leftIsAlive is false there is
 		// no way of recovering and we have no choice but to
 		// disconnect.
@@ -318,7 +343,7 @@ func (n *Node) restoreNetwork() error {
 		n.sendData(n.rightNode, UPDATE, &updateData{
 			left2nd: n.left2ndNode,
 		})
-		n.sendData(n.leftNode, UPDATE, &updateData{
+		n.sendData(n.left2ndNode, UPDATE, &updateData{
 			right: n.thisNode,
 		})
 		// This leaves n.left2ndNode incorrectly pointing to
@@ -340,6 +365,9 @@ func (n *Node) restoreNetwork() error {
 
 		n.aliveTimer.SafeReset(aliveTime)
 		return nil
+	} else {
+		// This should never happen.
+		log.Fatalf("Kick timer expired and was not handeled.")
 	}
 	return errors.New("Not able to restore connectivity.")
 }
@@ -450,6 +478,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	case PING:
 		if n.state == connected {
 			n.sendData(umsg.from, ALIVE, nil)
+			n.lonelyTimer.SafeReset(lonelyTime)
 		}
 
 	case ALIVE:
@@ -458,6 +487,18 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 				n.leftIsAlive = true
 			} else if umsg.from == n.left2ndNode {
 				n.left2ndIsAlive = true
+			}
+
+			if n.leftIsAlive && n.left2ndIsAlive {
+				// all good
+				if ok := n.kickTimer.Stop(); !ok {
+					// This should never happen.
+					log.Fatalf("Kick timer has been stopped"+
+						" after it expired.\n")
+				}
+				n.aliveTimer.SafeReset(aliveTime)
+				n.leftIsAlive = false
+				n.left2ndIsAlive = false
 			}
 		}
 
@@ -471,6 +512,8 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 			case n.deadNodes <- kick.deadNode:
 			default:
 			}
+
+			n.forwardMsg(msg)
 		}
 	}
 
@@ -569,6 +612,7 @@ func (n *Node) updateState(s nodeState) {
 		
 		n.state = connected
 		n.aliveTimer.SafeReset(aliveTime)
+		n.lonelyTimer.SafeReset(lonelyTime)
 	case disconnected:
 		// Setting these to zero should not be necessary, but
 		// useful for debugging because we can detect if a
