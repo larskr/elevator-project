@@ -17,7 +17,7 @@ import (
 const (
 	aliveTime          = 50 * time.Millisecond
 	kickTime           = 250 * time.Millisecond
-	lonelyTime         = 500 * time.Millisecond // => 2 * kickTime
+	//lonelyTime         = 500 * time.Millisecond // => 2 * kickTime
 	broadcastTime      = 500 * time.Millisecond
 	msgResendInterval  = 200 * time.Millisecond
 	kickResendInterval = 20 * time.Millisecond
@@ -131,11 +131,6 @@ type Node struct {
 	kickTimer      *SafeTimer
 	leftIsAlive    bool
 	left2ndIsAlive bool
-
-	// If node is kicked without knowing it (it may have been busy
-	// and not able to respond within kickTime) this timer will
-	// expire and the node will disconnect.
-	lonelyTimer *SafeTimer
 	
 	broadcastTimer *SafeTimer
 
@@ -182,7 +177,6 @@ func (n *Node) Start() error {
 		}
 		n.aliveTimer = NewSafeTimer(aliveTime)
 		n.kickTimer = NewSafeTimer(kickTime)
-		n.lonelyTimer = NewSafeTimer(lonelyTime)
 		n.broadcastTimer = NewSafeTimer(broadcastTime)
 
 		go n.maintainNetwork()
@@ -262,6 +256,8 @@ func (n *Node) maintainNetwork() {
 		case <-n.aliveTimer.C:
 			n.aliveTimer.Seen()
 			if n.state == connected {
+				n.leftIsAlive = false
+				n.left2ndIsAlive = false
 				n.sendData(n.leftNode, PING, nil)
 				if n.state != detached2ndLeft &&
 					n.left2ndNode != n.thisNode {
@@ -287,13 +283,6 @@ func (n *Node) maintainNetwork() {
 				}
 				n.leftIsAlive = false
 				n.left2ndIsAlive = false
-			}
-
-		case <-n.lonelyTimer.C:
-			n.lonelyTimer.Seen()
-			if n.state == connected {
-				// We are not receiving pings from other nodes.
-				n.updateState(disconnected)
 			}
 
 		case <-n.broadcastTimer.C:
@@ -478,7 +467,6 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	case PING:
 		if n.state == connected {
 			n.sendData(umsg.from, ALIVE, nil)
-			n.lonelyTimer.SafeReset(lonelyTime)
 		}
 
 	case ALIVE:
@@ -612,7 +600,6 @@ func (n *Node) updateState(s nodeState) {
 		
 		n.state = connected
 		n.aliveTimer.SafeReset(aliveTime)
-		n.lonelyTimer.SafeReset(lonelyTime)
 	case disconnected:
 		// Setting these to zero should not be necessary, but
 		// useful for debugging because we can detect if a
