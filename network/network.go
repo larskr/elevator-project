@@ -489,8 +489,12 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 			case n.deadNodes <- kick.deadNode:
 			default:
 			}
-
-			n.forwardMsg(msg)
+			
+			if re, ok := n.resenders[msg.ID]; ok {
+				n.removeResender(re)
+			} else {
+				n.forwardMsg(msg)
+			}
 		}
 	}
 
