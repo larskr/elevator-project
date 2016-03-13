@@ -9,17 +9,18 @@ package network
 import (
 	"errors"
 	"log"
+	"fmt"
 	"math/rand"
 	"time"
 )
 
 const (
-	aliveTime          = 1000 * time.Millisecond
-	kickTime           = 1000 * time.Millisecond
-	broadcastTime      = 5000 * time.Millisecond
-	msgResendInterval  = 2000 * time.Millisecond
-	kickResendInterval = 200 * time.Millisecond
-	lonelyDelay        = 1000 * time.Millisecond
+	aliveTime          = 50 * time.Millisecond
+	kickTime           = 250 * time.Millisecond
+	broadcastTime      = 500 * time.Millisecond
+	msgResendInterval  = 200 * time.Millisecond
+	kickResendInterval = 20 * time.Millisecond
+	lonelyDelay        = 100 * time.Millisecond
 )
 
 const (
@@ -550,6 +551,10 @@ func (n *Node) updateState(s nodeState) {
 		if n.leftNode.IsZero() || n.rightNode.IsZero() || n.left2ndNode.IsZero() {
 			log.Fatalf("Invalid node state.\n")
 		}
+
+		log.Printf("Node connected as:")
+		fmt.Printf("                    %v -> \x1b[35m%v\x1b[m -> %v -> %v\n",
+			n.rightNode, n.thisNode, n.leftNode, n.left2ndNode);
 		
 		n.state = connected
 		n.aliveTimer.SafeReset(aliveTime)
@@ -560,6 +565,8 @@ func (n *Node) updateState(s nodeState) {
 		n.leftNode.SetZero()
 		n.rightNode.SetZero()
 		n.left2ndNode.SetZero()
+
+		log.Printf("Node was disconnected.\n")
 		
 		n.state = disconnected
 		n.broadcastTimer.SafeReset(broadcastTime)
