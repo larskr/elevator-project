@@ -229,6 +229,7 @@ func (n *Node) maintainNetwork() {
 		if n.state == connected || n.state == detached2ndLeft {
 
 			if n.aliveTimer.HasTimedOut() {
+				n.aliveTimer.Stop()
 				n.leftIsAlive = false
 				n.left2ndIsAlive = false
 				n.sendData(n.leftNode, PING, nil)
@@ -240,6 +241,7 @@ func (n *Node) maintainNetwork() {
 			}
 
 			if n.kickTimer.HasTimedOut() {
+				n.kickTimer.Stop()
 				if n.leftIsAlive {
 					// Since kick timer expired left2ndNode
 					// must be dead, but that is leftNode's
