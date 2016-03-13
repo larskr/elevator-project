@@ -33,5 +33,14 @@ func (t *SafeTimer) SafeReset(d time.Duration) bool {
 	return ret
 }
 
+func (t *SafeTimer) SafeStop() bool {
+	ret := t.Stop()
+	if !ret && !t.seen {
+		<-t.C
+	}
+	t.seen = false
+	return ret
+}
+
 
 

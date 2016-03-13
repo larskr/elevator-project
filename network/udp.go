@@ -8,7 +8,6 @@ import (
 const (
 	maxPayloadLength = 256
 	UDPPort          = 2048
-	UDPBufferSize    = 32
 )
 
 type UDPMessage struct {
@@ -39,8 +38,8 @@ func NewUDPService() (*UDPService, error) {
 	}
 	s := &UDPService{
 		conn:     conn,
-		receivec: make(chan *UDPMessage, UDPBufferSize),
-		sendc:    make(chan *UDPMessage, UDPBufferSize),
+		receivec: make(chan *UDPMessage, 1),
+		sendc:    make(chan *UDPMessage, 1),
 	}
 
 	s.addr, _ = NetworkAddr()

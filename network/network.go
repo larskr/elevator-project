@@ -600,6 +600,7 @@ func (n *Node) updateState(s nodeState) {
 		
 		n.state = connected
 		n.aliveTimer.SafeReset(aliveTime)
+		n.broadcastTimer.SafeStop()
 	case disconnected:
 		// Setting these to zero should not be necessary, but
 		// useful for debugging because we can detect if a
