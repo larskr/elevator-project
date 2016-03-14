@@ -6,8 +6,8 @@ import (
 	
 	"github.com/BurntSushi/toml"
 
-	"ring-network/elev"
-	"ring-network/network"
+	"elevator-project/elev"
+	"elevator-project/network"
 )
 
 type tomlConfig struct {

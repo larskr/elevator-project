@@ -3,7 +3,7 @@ package main
 import (
 	"time"
 
-	"ring-network/elev"
+	"elevator-project/elev"
 )
 
 // stateFn represents the state of the elevator as a function that

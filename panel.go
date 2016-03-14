@@ -3,7 +3,7 @@ package main
 import (
 	"time"
 
-	"ring-network/elev"
+	"elevator-project/elev"
 )
 
 const pollInterval = 25 * time.Millisecond
