@@ -24,13 +24,26 @@ func main() {
 	elev.LoadConfig(&config.Elevator)
 	network.LoadConfig(&config.Network)
 
-	node := network.NewNode()
-	node.Start()
+	elev.Init()
 	
-	//e := new(Elevator)
-	//e.Start()
+	//node := network.NewNode()
+	//node.Start()
+	
+	panel := new(Panel)
+	panel.Start()
 
-	select { }
+	elevator := NewElevator(panel)
+	elevator.Start()
+
+	for {
+		select {
+		case req := <-panel.Requests:
+			fmt.Printf("Request: floor %v, direction %v\n", req.Floor, req.Direction)
+			elevator.Add(req)
+		//case floor := <-panel.Commands:
+		//	fmt.Printf("Go to floor %v\n.", floor)
+		}
+	}
 	
 	os.Exit(0)
 }

@@ -3,6 +3,7 @@ package elev
 import (
 	"errors"
 	"net"
+	"sync"
 )
 
 // Hardware constants
@@ -13,10 +14,20 @@ const (
 type Direction int
 
 const (
-	Down Direction = -1
-	Stop Direction = 0
+	Down Direction = 0
 	Up   Direction = 1
+	Stop Direction = 2
 )
+
+// For debugging.
+func (dir Direction) String() (str string) {
+	switch dir {
+	case Up: str = "UP"
+	case Down: str = "DOWN"
+	case Stop: str = "STOP"
+	}
+	return
+}
 
 type Button int
 
@@ -43,6 +54,7 @@ var (
 )
 
 var sim struct {
+	mu   sync.Mutex
 	conn *net.TCPConn
 	buf  [4]byte
 }
@@ -70,8 +82,10 @@ func Init() error {
 		if err != nil {
 			return err
 		}
+		sim.mu.Lock()
 		sim.conn = c
 		sim.conn.Write(sim.buf[:])
+		sim.mu.Unlock()
 		return nil
 	}
 
@@ -95,10 +109,13 @@ func Init() error {
 
 func SetMotorDirection(dir Direction) {
 	if config.UseSimulator {
-		if dir == Down {
+		switch dir {
+		case Down:
 			sim.conn.Write([]byte{1, 255, 0, 0})
-		} else {
-			sim.conn.Write([]byte{1, byte(dir), 0, 0})
+		case Stop:
+			sim.conn.Write([]byte{1, 0, 0, 0})
+		case Up:
+			sim.conn.Write([]byte{1, 1, 0, 0})
 		}
 		return
 	}
@@ -175,8 +192,10 @@ func SetStopLamp(val int) {
 
 func ReadButton(b Button, floor int) int {
 	if config.UseSimulator {
+		sim.mu.Lock()
 		sim.conn.Write([]byte{6, byte(b), byte(floor), 0})
 		sim.conn.Read(sim.buf[:])
+		defer sim.mu.Unlock()
 		return int(sim.buf[1])
 	}
 
@@ -185,8 +204,10 @@ func ReadButton(b Button, floor int) int {
 
 func ReadFloorSensor() int {
 	if config.UseSimulator {
+		sim.mu.Lock()
 		sim.conn.Write([]byte{7, 0, 0, 0})
 		sim.conn.Read(sim.buf[:])
+		defer sim.mu.Unlock()
 		if sim.buf[1] == 1 {
 			return int(sim.buf[2])
 		}
@@ -209,8 +230,10 @@ func ReadFloorSensor() int {
 
 func ReadStopButton() int {
 	if config.UseSimulator {
+		sim.mu.Lock()
 		sim.conn.Write([]byte{8, 0, 0, 0})
 		sim.conn.Read(sim.buf[:])
+		sim.mu.Unlock()
 		return int(sim.buf[1])
 	}
 
@@ -219,8 +242,10 @@ func ReadStopButton() int {
 
 func ReadObstruction() int {
 	if config.UseSimulator {
+		sim.mu.Lock()
 		sim.conn.Write([]byte{9, 0, 0, 0})
 		sim.conn.Read(sim.buf[:])
+		sim.mu.Unlock()
 		return int(sim.buf[1])
 	}
 
