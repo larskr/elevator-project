@@ -1,3 +1,1 @@
-A simple ring network over UDP.
-
-Added from a Raspberry Pi.
+A simple circular overlay network over UDP and elevator FSM.
