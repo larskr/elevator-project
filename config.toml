@@ -1,9 +1,9 @@
 [elevator]
 MotorSpeed = 2800
-UseSimulator = true
+UseSimulator = false
 SimulatorPort = 15657
 SimulatorIP = "192.168.1.41"
 
 [network]
-Interface = "en0"
+Interface = "eth0"
 UseIPv6 = false

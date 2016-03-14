@@ -84,7 +84,7 @@ func Init() error {
 		}
 		sim.mu.Lock()
 		sim.conn = c
-		sim.conn.Write(sim.buf[:])
+		//sim.conn.Write(sim.buf[:])
 		sim.mu.Unlock()
 		return nil
 	}

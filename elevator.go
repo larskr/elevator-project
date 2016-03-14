@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"sync"
 	"time"
 
 	"ring-network/elev"
@@ -25,21 +23,8 @@ type Elevator struct {
 	dest map[int]bool
 
 	// Pending requests.
-	requests [elev.NumFloors][2]int
-
-	// Protects dest and requests which are updated from outside the FSM goroutine.
-	mu sync.Mutex
-}
-
-func (e *Elevator) String() string {
-	dests := ""
-	for f := range e.dest {
-		dests = fmt.Sprintf("%v, %v", dests, f)
-	}
-	reqs := ""
-	str := fmt.Sprintf("floor: %v, direction: %v\ndest [%v]\n%v",
-		e.floor, e.direction, dests, reqs)
-	return str
+	requests [elev.NumFloors][2]bool
+	queue    chan Request
 }
 
 func NewElevator(p *Panel) *Elevator {
@@ -47,6 +32,7 @@ func NewElevator(p *Panel) *Elevator {
 	e.panel = p
 	e.direction = elev.Stop
 	e.dest = make(map[int]bool)
+	e.queue = make(chan Request, 2*elev.NumFloors)
 	return e
 }
 
@@ -55,20 +41,28 @@ func (e *Elevator) Start() {
 }
 
 func (e *Elevator) Add(req Request) {
-	e.mu.Lock()
-	e.requests[req.Floor][req.Direction] = 1
-	e.mu.Unlock()
+	e.queue <- req
 }
 
 func (e *Elevator) run() {
 	for e.state = start; e.state != nil; {
+		
+	empty:  // empty request queue
+		for {
+			select {
+			case req := <-e.queue:
+				e.requests[req.Floor][req.Direction] = true
+			default:
+				break empty
+			}
+		}
+
+		// advance to next state
 		e.state = e.state(e)
 	}
 }
 
 func start(e *Elevator) stateFn {
-	fmt.Printf("start\n%v", e)
-	
 	if f := elev.ReadFloorSensor(); f == -1 {
 		elev.SetMotorDirection(elev.Down)
 		e.direction = elev.Down
@@ -79,169 +73,156 @@ func start(e *Elevator) stateFn {
 }
 
 func moving(e *Elevator) stateFn {
-	fmt.Printf("moving\n%v", e)
-	
 	for elev.ReadFloorSensor() == -1 {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	e.floor = elev.ReadFloorSensor()
 	return atFloor
 }
 
 func atFloor(e *Elevator) stateFn {
-	fmt.Printf("atFloor\n%v", e)
-	
 	elev.SetFloorIndicator(e.floor)
-	
-	e.mu.Lock()
+
+	if len(e.dest) == 0 {
+		elev.SetMotorDirection(elev.Stop)
+		e.direction = elev.Stop
+		return idle
+	}
+
 	// Is this floor a destination?
 	// Is there a request at this floor in the direction we're going?
-	if e.dest[e.floor] || e.requests[e.floor][e.direction] == 1 {
+	if e.dest[e.floor] || e.requests[e.floor][e.direction] {
 		elev.SetMotorDirection(elev.Stop)
 
 		if e.dest[e.floor] {
 			delete(e.dest, e.floor)
-			e.panel.Clear(elev.Command, e.floor)
+
+			// Update lamps on internal elevator panel.
+			e.panel.Reset(elev.Command, e.floor)
 
 			// We clear all requests (up and down) if we stop. This assumes
 			// passengers will accept travelling in the wrong direction for a
 			// while.
-			e.clear(e.floor, elev.Up)
-			e.clear(e.floor, elev.Down)
+			e.clearRequest(e.floor, elev.Up)
+			e.clearRequest(e.floor, elev.Down)
 		}
 
 		// If we are only clearing requests in the direction of motion, we can
 		// do the following:
-		//                               (insert opposite dir here)    
+		//                               (insert opposite dir here)
 		//                                            v
 		// if len(e.dest) == 0 && e.request[e.floor][...] == 1 {
-		//         e.clear(e.floor, ...)
+		//         e.clearRequest(e.floor, ...)
 		// }
 
-		if e.requests[e.floor][e.direction] == 1 {
-			e.clear(e.floor, e.direction)
+		if e.requests[e.floor][e.direction] {
+			e.clearRequest(e.floor, e.direction)
 		}
-		
-		e.mu.Unlock()
+
 		return doorsOpen
 	}
-	e.mu.Unlock()
-	
+
 	if (e.direction == elev.Up && e.floor == elev.NumFloors-1) ||
 		(e.direction == elev.Down && e.floor == 0) {
 		elev.SetMotorDirection(elev.Stop)
 		e.direction = elev.Stop
 		return idle
 	}
-	
+
 	// Wait untill floor is passed.
 	for elev.ReadFloorSensor() != -1 {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	return moving
 }
 
 func doorsOpen(e *Elevator) stateFn {
-	fmt.Printf("doorsOpen\n%v", e)
 	elev.SetDoorOpenLamp(1)
 	defer elev.SetDoorOpenLamp(0)
 
-	
 	timeOut := time.After(3 * time.Second)
 	for {
 		select {
 		case <-timeOut:
-			return idle
+			return gotoFloor
 		case floor := <-e.panel.Commands:
-			e.mu.Lock()
 			e.dest[floor] = true
-			e.mu.Unlock()
-			return leavingFloor
+			return gotoFloor
 		}
 	}
 }
 
-func leavingFloor(e *Elevator) stateFn {
-	fmt.Printf("leavingFloor\n%v", e)
-	
+func gotoFloor(e *Elevator) stateFn {
 	// Assumption: motor is stopped when entering this function, but
 	// e.direction holds the previous direction of motion.
-	
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	
 	if len(e.dest) > 0 {
 		for d := range e.dest {
-			switch {
 			// Are there more destinations in the direction of motion?
-			case d > e.floor && e.direction == elev.Up:
+			if d > e.floor && e.direction == elev.Up {
 				elev.SetMotorDirection(elev.Up)
 				return moving
-			case d < e.floor && e.direction == elev.Down:
+			} else if d < e.floor && e.direction == elev.Down {
 				elev.SetMotorDirection(elev.Down)
 				return moving
 			}
 		}
 		// No destinations in the direction of motion. Flip directions
 		// and try again.
-		switch {
-		case e.direction == elev.Up:
+		if e.direction == elev.Up {
 			e.direction = elev.Down
-		case e.direction == elev.Down:
+		} else if e.direction == elev.Down {
 			e.direction = elev.Up
 		}
-		return leavingFloor
+		return gotoFloor
 	}
 
 	// If we get to this point, there are no more destinations.
+	elev.SetMotorDirection(elev.Stop)
+	e.direction = elev.Stop
 	return idle
 }
 
 func idle(e *Elevator) stateFn {
-	fmt.Printf("idle\n%v", e)
-	
-	//if len(e.dest) > 0 {
-	//	return leavingFloor
-	//}
-	
-	e.direction = elev.Stop
 	// Keep checking for new reqests. It's really not necessary to lock
 	// the mutex where reading repeatedly in a loop like this. A faulty
 	// read out does no harm.
-	for {
-		for floor := 0; floor < elev.NumFloors; floor++ {
-			if e.requests[floor][elev.Up] == 1 ||
-				e.requests[floor][elev.Down] == 1 {
-
-				if floor == e.floor { // Request at this floor
-					e.clear(floor, elev.Up)
-					e.clear(floor, elev.Down)
-					return doorsOpen
-				} else if floor > e.floor {
-					e.direction = elev.Up
-				} else {
-					e.direction = elev.Down
-				}
-				
-				e.mu.Lock()
-				e.dest[floor] = true
-				e.mu.Unlock()
-
-				return leavingFloor
+	for floor := 0; floor < elev.NumFloors; floor++ {
+		if e.requests[floor][elev.Up] || e.requests[floor][elev.Down] {
+			if floor == e.floor && e.requests[floor][elev.Up] {
+				e.clearRequest(floor, elev.Up)
+				e.clearRequest(floor, elev.Down) // clear both directions
+				e.direction = elev.Up
+				return doorsOpen
+			} else if floor == e.floor && e.requests[floor][elev.Down] {
+				e.clearRequest(floor, elev.Up) // clear both directions
+				e.clearRequest(floor, elev.Down)
+				e.direction = elev.Down
+				return doorsOpen
+			} else if floor > e.floor {
+				e.direction = elev.Up
+			} else {
+				e.direction = elev.Down
 			}
+
+			e.dest[floor] = true
+			return gotoFloor
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	
+	time.Sleep(100 * time.Millisecond)
+
+	return idle
 }
 
-func (e *Elevator) clear(floor int, dir elev.Direction) {
-	e.requests[floor][dir] = 0
-	switch dir {
-	case elev.Up:
-		e.panel.Clear(elev.CallUp, floor)
-	case elev.Down:
-		e.panel.Clear(elev.CallDown, floor)
+func (e *Elevator) clearRequest(floor int, dir elev.Direction) {
+	if (floor == 0 && dir == elev.Down) || (floor == elev.NumFloors-1 && dir == elev.Up) {
+		return // invalid request
+	}
+	e.requests[floor][dir] = false
+	if dir == elev.Up {
+		e.panel.Reset(elev.CallUp, floor)
+	} else {
+		e.panel.Reset(elev.CallDown, floor)
 	}
 }
