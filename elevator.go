@@ -53,7 +53,7 @@ func (e *Elevator) run() {
 		for {
 			select {
 			case req := <-e.queue:
-				e.requests[req.Floor][indexOf(req.Direction)] = true
+				e.requests[req.Floor][indexOfDir(req.Direction)] = true
 			default:
 				break empty
 			}
@@ -93,7 +93,7 @@ func atFloor(e *Elevator) stateFn {
 
 	// Is this floor a destination?
 	// Is there a request at this floor in the direction we're going?
-	if e.dest[e.floor] || e.requests[e.floor][indexOf(e.direction)] {
+	if e.dest[e.floor] || e.requests[e.floor][indexOfDir(e.direction)] {
 		elev.SetMotorDirection(elev.Stop)
 
 		if e.dest[e.floor] {
@@ -118,7 +118,7 @@ func atFloor(e *Elevator) stateFn {
 		//         e.direction = ...
 		// }
 
-		if e.requests[e.floor][indexOf(e.direction)] {
+		if e.requests[e.floor][indexOfDir(e.direction)] {
 			e.clearRequest(e.floor, e.direction)
 		}
 
@@ -188,13 +188,13 @@ func gotoFloor(e *Elevator) stateFn {
 
 func idle(e *Elevator) stateFn {
 	for floor := 0; floor < elev.NumFloors; floor++ {
-		if e.requests[floor][indexOf(elev.Up)] || e.requests[floor][indexOf(elev.Down)] {
-			if floor == e.floor && e.requests[floor][indexOf(elev.Up)] {
+		if e.requests[floor][indexOfDir(elev.Up)] || e.requests[floor][indexOfDir(elev.Down)] {
+			if floor == e.floor && e.requests[floor][indexOfDir(elev.Up)] {
 				e.clearRequest(floor, elev.Up)
 				e.clearRequest(floor, elev.Down) // clear both directions
 				e.direction = elev.Up
 				return doorsOpen
-			} else if floor == e.floor && e.requests[floor][indexOf(elev.Down)] {
+			} else if floor == e.floor && e.requests[floor][indexOfDir(elev.Down)] {
 				e.clearRequest(floor, elev.Up) // clear both directions
 				e.clearRequest(floor, elev.Down)
 				e.direction = elev.Down
@@ -219,6 +219,6 @@ func (e *Elevator) clearRequest(floor int, dir elev.Direction) {
 	if (floor == 0 && dir == elev.Down) || (floor == elev.NumFloors-1 && dir == elev.Up) {
 		return // invalid request
 	}
-	e.requests[floor][indexOf(dir)] = false
+	e.requests[floor][indexOfDir(dir)] = false
 	e.panel.Reset(btnFromDir(dir), floor)
 }

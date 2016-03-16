@@ -17,15 +17,25 @@ type Panel struct {
 	lamps  [elev.NumFloors][3]bool
 }
 
-func (p *Panel) Start() {
+func NewPanel() *Panel {
+	p := new(Panel)
 	p.Requests = make(chan Request, maxRequests)
 	p.Commands = make(chan int)
+	return p
+}
+
+func (p *Panel) Start() {
 	go p.poll()
 }
 
-func (p *Panel) Set(b elev.Button, floor int) {
-	elev.SetButtonLamp(b, floor, 1)
-	p.lamps[floor][b] = true
+func (p *Panel) Set(b elev.Button, floor int, on bool) {
+	if on {
+		elev.SetButtonLamp(b, floor, 1)
+		p.lamps[floor][b] = true
+	} else {
+		elev.SetButtonLamp(b, floor, 0)
+		p.lamps[floor][b] = false
+	}
 }
 
 func (p *Panel) Reset(b elev.Button, floor int) {

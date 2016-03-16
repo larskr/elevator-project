@@ -26,22 +26,23 @@ const (
 
 const (
 	bufferSize     = 32
-	maxDataLength  = 244
+	MaxDataLength  = 244
 	maxResendCount = 5
 	maxReadCount   = 100
 	maxResenders   = 100
 )
 
+type MsgType uint32
 // Message types. User-defined message types must be >= 16.
 // 0-15 are reserved.
 const (
-	BROADCAST = 0x0 // Announce that node is ready to connect.
-	HELLO     = 0x1 // Reply to broadcasting node with new possible links.
-	UPDATE    = 0x2 // Update links on neighbouring nodes.
-	GET       = 0x3 // Request for UPDATE of left2ndNode.
-	PING      = 0x4 // Check that node is alive.
-	ALIVE     = 0x5 // Reply to PING.
-	KICK      = 0x6 // Inform network that a node has been kicked.
+	BROADCAST MsgType = 0x0 // Announce that node is ready to connect.
+	HELLO     MsgType = 0x1 // Reply to broadcasting node with new possible links.
+	UPDATE    MsgType = 0x2 // Update links on neighbouring nodes.
+	GET       MsgType = 0x3 // Request for UPDATE of left2ndNode.
+	PING      MsgType = 0x4 // Check that node is alive.
+	ALIVE     MsgType = 0x5 // Reply to PING.
+	KICK      MsgType = 0x6 // Inform network that a node has been kicked.
 )
 
 // The Message type is what is packed into the UDP datagram and sent
@@ -49,17 +50,17 @@ const (
 // that should be sent.
 type Message struct {
 	ID        uint32
-	Type      uint32
+	Type      MsgType // uint32
 	ReadCount uint32
-	buf       [maxDataLength]byte
+	buf       [MaxDataLength]byte
 
 	Data []byte // points into buf
 }
 
 // NewMessage allocates and initializes a Message copying from the data
 // slice.
-func NewMessage(mtype uint32, data []byte) *Message {
-	msg := &Message{ID: rand.Uint32(), Type: uint32(mtype)}
+func NewMessage(mtype MsgType, data []byte) *Message {
+	msg := &Message{ID: rand.Uint32(), Type: mtype}
 	n := 0
 	if data != nil {
 		n = copy(msg.buf[:], data)
@@ -542,7 +543,7 @@ func (n *Node) removeResender(re *resender) {
 
 func unpackMsg(p []byte, msg *Message) {
 	msg.ID = binary.BigEndian.Uint32(p[:])
-	msg.Type = binary.BigEndian.Uint32(p[4:])
+	msg.Type = MsgType(binary.BigEndian.Uint32(p[4:]))
 	msg.ReadCount = binary.BigEndian.Uint32(p[8:])
 	n := copy(msg.buf[:], p[12:])
 	msg.Data = msg.buf[:n]
@@ -582,10 +583,10 @@ func unpackData(p []byte, data interface{}) {
 	}
 }
 
-func (n *Node) sendData(to Addr, mtype uint32, data interface{}) {
+func (n *Node) sendData(to Addr, mtype MsgType, data interface{}) {
 	umsg := &UDPMessage{to: to, from: n.thisNode}
 	binary.BigEndian.PutUint32(umsg.buf[:], rand.Uint32())
-	binary.BigEndian.PutUint32(umsg.buf[4:], mtype)
+	binary.BigEndian.PutUint32(umsg.buf[4:], uint32(mtype))
 	umsg.payload = umsg.buf[:12]
 	
 	if data != nil {
@@ -600,7 +601,7 @@ func (n *Node) forwardMsg(msg *Message) {
 	umsg := &UDPMessage{to: n.leftNode, from: n.thisNode}
 
 	binary.BigEndian.PutUint32(umsg.buf[:], msg.ID)
-	binary.BigEndian.PutUint32(umsg.buf[4:], msg.Type)
+	binary.BigEndian.PutUint32(umsg.buf[4:], uint32(msg.Type))
 	binary.BigEndian.PutUint32(umsg.buf[8:], msg.ReadCount)
 	nc := copy(umsg.buf[12:], msg.Data)
 
