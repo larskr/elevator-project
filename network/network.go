@@ -335,13 +335,12 @@ func (n *Node) restoreNetwork() error {
 		n.sendData(n.leftNode, GET, nil)
 
 		// Create and send a kick message.
-		var data [32]byte
-		kd := kickData{
+		var buf [32]byte
+		packData(buf[:], &kickData{
 			deadNode:   deadNode,
 			senderNode: n.thisNode,
-		}
-		Pack(data[:], "16C16C", kd.deadNode[:], n.thisNode[:])
-		n.addResender(NewMessage(KICK, data[:]), kickResendInterval)
+		})
+		n.addResender(NewMessage(KICK, buf[:]), kickResendInterval)
 
 		n.aliveTimer.Reset(aliveTime)
 		return nil
@@ -354,9 +353,7 @@ func (n *Node) restoreNetwork() error {
 
 func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	msg := new(Message)
-	Unpack(umsg.payload, "LLL", &msg.ID, &msg.Type, &msg.ReadCount)
-	nc := copy(msg.buf[:], umsg.payload[8:])
-	msg.Data = msg.buf[:nc]
+	unpackMsg(umsg.payload, msg)
 
 	if msg.ReadCount > maxReadCount {
 		return
@@ -387,8 +384,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	case HELLO:
 		if n.state == disconnected {
 			var hd helloData
-			Unpack(msg.Data, "16C16C16C",
-				hd.newRight[:], hd.newLeft[:], hd.newLeft2nd[:])
+			unpackData(msg.Data, &hd)
 
 			n.rightNode = hd.newRight
 			n.leftNode = hd.newLeft
@@ -430,8 +426,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 
 	case UPDATE:
 		var ud updateData
-		Unpack(msg.Data, "16C16C16C",
-			ud.right[:], ud.left[:], ud.left2nd[:])
+		unpackData(msg.Data, &ud)
 
 		if !ud.right.IsZero() {
 			n.rightNode = ud.right
@@ -482,7 +477,8 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	case KICK:
 		if n.state == connected {
 			var kick kickData
-			Unpack(msg.Data, "16C16C", kick.deadNode[:], kick.senderNode[:])
+			copy(kick.deadNode[:], msg.Data[:])
+			copy(kick.senderNode[:], msg.Data[16:])
 
 			select {
 			case n.deadNodes <- kick.deadNode:
@@ -544,34 +540,68 @@ func (n *Node) removeResender(re *resender) {
 	delete(n.resenders, re.msg.ID)
 }
 
+func unpackMsg(p []byte, msg *Message) {
+	msg.ID = binary.BigEndian.Uint32(p[:])
+	msg.Type = binary.BigEndian.Uint32(p[4:])
+	msg.ReadCount = binary.BigEndian.Uint32(p[8:])
+	n := copy(msg.buf[:], p[12:])
+	msg.Data = msg.buf[:n]
+}
+
+func packData(p []byte, data interface{}) int {
+	var n int
+	switch d := data.(type) {
+	case *helloData:
+		n += copy(p[:], d.newRight[:])
+		n += copy(p[16:], d.newLeft[:])
+		n += copy(p[32:], d.newLeft2nd[:])
+	case *updateData:
+		n += copy(p[:], d.right[:])
+		n += copy(p[16:], d.left[:])
+		n += copy(p[32:], d.left2nd[:])
+	case *kickData:
+		n += copy(p[:], d.deadNode[:])
+		n += copy(p[16:], d.senderNode[:])
+	}
+	return n
+}
+
+func unpackData(p []byte, data interface{}) {
+	switch d := data.(type) {
+	case *helloData:
+		copy(d.newRight[:], p[:])
+		copy(d.newLeft[:], p[16:])
+		copy(d.newLeft2nd[:], p[32:])
+	case *updateData:
+		copy(d.right[:], p[:])
+		copy(d.left[:], p[16:])
+		copy(d.left2nd[:], p[32:])
+	case *kickData:
+		copy(d.deadNode[:], p[:])
+		copy(d.senderNode[:], p[16:])
+	}
+}
+
 func (n *Node) sendData(to Addr, mtype uint32, data interface{}) {
 	umsg := &UDPMessage{to: to, from: n.thisNode}
-	Pack(umsg.buf[:], "LL", rand.Uint32(), mtype)
+	binary.BigEndian.PutUint32(umsg.buf[:], rand.Uint32())
+	binary.BigEndian.PutUint32(umsg.buf[4:], mtype)
 	umsg.payload = umsg.buf[:12]
+	
 	if data != nil {
-		var np int
-		switch d := data.(type) {
-		case *helloData:
-			np, _ = Pack(umsg.buf[8:], "16C16C16C",
-				d.newRight[:], d.newLeft[:], d.newLeft2nd[:])
-		case *updateData:
-			np, _ = Pack(umsg.buf[8:], "16C16C16C",
-				d.right[:], d.left[:], d.left2nd[:])
-		case *kickData:
-			np, _ = Pack(umsg.buf[8:], "16C16C",
-				d.deadNode[:], d.senderNode[:])
-		default:
-			log.Printf("Unknown message data.")
-		}
-		umsg.payload = umsg.buf[:np+12]
+		np := packData(umsg.buf[12:], data)
+		umsg.payload = umsg.buf[:12+np]
 	}
+	
 	n.udp.Send(umsg)
 }
 
 func (n *Node) forwardMsg(msg *Message) {
 	umsg := &UDPMessage{to: n.leftNode, from: n.thisNode}
 
-	Pack(umsg.buf[:], "LLL", msg.ID, msg.Type, msg.ReadCount)
+	binary.BigEndian.PutUint32(umsg.buf[:], msg.ID)
+	binary.BigEndian.PutUint32(umsg.buf[4:], msg.Type)
+	binary.BigEndian.PutUint32(umsg.buf[8:], msg.ReadCount)
 	nc := copy(umsg.buf[12:], msg.Data)
 
 	umsg.payload = umsg.buf[:nc+12]

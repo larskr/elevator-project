@@ -2,7 +2,7 @@ package elev
 
 /*
 #cgo CFLAGS: -std=c11
-#cgo LDFLAGS: /usr/lib/x86_64-linux-gnu/libphobos2.a -lpthread -lcomedi -lm
+#cgo LDFLAGS: -lcomedi -lm
 #include "io.h"
 */
 //import "C"
