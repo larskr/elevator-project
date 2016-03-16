@@ -35,13 +35,20 @@ func main() {
 	elevator := NewElevator(panel)
 	elevator.Start()
 
+	//for !node.IsConnected() {
+	//	time.Sleep(time.Second)
+	//}
+
+	//node.SendMessage(network.NewMessage(16, []byte("Hello, world.")))
+
+	//node.ReceiveMyMessage()
+	//fmt.Println("Got my message.")
+	
 	for {
 		select {
 		case req := <-panel.Requests:
 			fmt.Printf("Request: floor %v, direction %v\n", req.Floor, req.Direction)
 			elevator.Add(req)
-		//case floor := <-panel.Commands:
-		//	fmt.Printf("Go to floor %v\n.", floor)
 		}
 	}
 	

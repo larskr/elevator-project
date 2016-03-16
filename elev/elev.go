@@ -14,9 +14,9 @@ const (
 type Direction int
 
 const (
-	Down Direction = 0
+	Down Direction = -1
+	Stop Direction = 0
 	Up   Direction = 1
-	Stop Direction = 2
 )
 
 // For debugging.

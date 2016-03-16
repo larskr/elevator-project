@@ -77,7 +77,7 @@ function sprintf_msg(from, to, id, type, read_count, data) {
 	pad = substr("            ", 1, pad_len);
 	decoded_msg = sprintf("(id %10d, type %d, read_count %2d) %s",\
 			      id, type, read_count, types[type]);
-	if (length(data) != 0 && (type == 0 || type == 3 || type == 4  || type == 5)) {
+	if (type == 0 || type == 3 || type == 4  || type == 5) {
 		return sprintf("%s%s%s", to_from_str, pad, decoded_msg)
 	} else {
 		return sprintf("%s%s%s\n             %s", to_from_str, pad,\
@@ -97,8 +97,8 @@ function sprintf_msg(from, to, id, type, read_count, data) {
 	getline;
 	id = hex_read_uint32($8 $9, 1);
 	getline;
-	type = hex_read_byte($2, 1);
-	read_count = hex_read_byte($2, 3);
+	type = hex_read_uint32($2 $3, 1);
+	read_count = hex_read_uint32($4 $5, 1);
 
 	# Suppress  messages
 	if (show_all) {
@@ -113,7 +113,7 @@ function sprintf_msg(from, to, id, type, read_count, data) {
 		chunkcount = 0;
 		split("0,1,2,3,4,5,6,7,8,9", itoa, ",");
 		while(match($0, /0x[0-9a-f]{4,4}:/)) {
-			initfield = linecount == 1 ? 4 : 2;
+			initfield = linecount == 1 ? 6 : 2;
 			for (field = initfield; field < NF; field++) {
 				if ((chunkcount % 8) == 0) {
 					newline = linecount == 1 ? "" : "\n";
@@ -142,17 +142,17 @@ function sprintf_msg(from, to, id, type, read_count, data) {
 			print time " | " sprintf_msg(from, to, id, type, read_count);
 		} else if (type == 1 || type == 2) {
 			getline;
-			data = $2 " " $3;
+			data = $4 " " $5;
 			getline;
-			data = data " " $2 " " $3;
+			data = data " " $4 " " $5;
 			getline;
-			data = data " " $2 " " $3;
+			data = data " " $4 " " $5;
 			print time " | " sprintf_msg(from, to, id, type, read_count, data);
 		} else if (type == 6) {
 			getline;
-			data = $2 " " $3;
+			data = $4 " " $5;
 			getline;
-			data = data " " $2 " " $3;
+			data = data " " $4 " " $5;
 			print time " | " sprintf_msg(from, to, id, type, read_count, data);
 		}
 		

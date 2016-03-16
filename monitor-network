@@ -15,7 +15,7 @@ while [ $# -gt 0 ]; do
 	-i) interface=$2; shift; shift;;
 	-r) read_file=$2; shift; shift;;
 	-w) write_file=$2; shift; shift;;
-	-v) filter="-v f='0|1|2|3|6'"; shift;;
+	-v) filter="-v f=0|1|2|3|6"; shift;;
 	-vv) filter="-v show_all=1"; shift;;
 	-f) filter="-v f=$2|"; shift; shift;;
 	-X) hex="-v hexdump=1"; shift;;
@@ -33,4 +33,5 @@ elif [ "$write_file" != "" ]; then
     options="-w $write_file";
 fi
 
-tcpdump -i $interface udp port 2048 -n -l -vv -X $options | gawk -f monitor-network.awk $hex $filter;
+tcpdump -i $interface udp port 2048 -n -l -vv -X $options\
+    | gawk -f monitor-network.awk $hex $filter;

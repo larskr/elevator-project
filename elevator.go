@@ -6,6 +6,7 @@ import (
 	"elevator-project/elev"
 )
 
+
 // stateFn represents the state of the elevator as a function that
 // returns the next state.
 type stateFn func(*Elevator) stateFn
@@ -32,7 +33,7 @@ func NewElevator(p *Panel) *Elevator {
 		panel:     p,
 		direction: elev.Stop,
 		dest:      make(map[int]bool),
-		queue:     make(chan Request, 2*elev.NumFloors),
+		queue:     make(chan Request, maxRequests),
 	}
 	return e
 }
@@ -52,7 +53,7 @@ func (e *Elevator) run() {
 		for {
 			select {
 			case req := <-e.queue:
-				e.requests[req.Floor][req.Direction] = true
+				e.requests[req.Floor][indexOf(req.Direction)] = true
 			default:
 				break empty
 			}
@@ -92,7 +93,7 @@ func atFloor(e *Elevator) stateFn {
 
 	// Is this floor a destination?
 	// Is there a request at this floor in the direction we're going?
-	if e.dest[e.floor] || e.requests[e.floor][e.direction] {
+	if e.dest[e.floor] || e.requests[e.floor][indexOf(e.direction)] {
 		elev.SetMotorDirection(elev.Stop)
 
 		if e.dest[e.floor] {
@@ -117,7 +118,7 @@ func atFloor(e *Elevator) stateFn {
 		//         e.direction = ...
 		// }
 
-		if e.requests[e.floor][e.direction] {
+		if e.requests[e.floor][indexOf(e.direction)] {
 			e.clearRequest(e.floor, e.direction)
 		}
 
@@ -186,17 +187,14 @@ func gotoFloor(e *Elevator) stateFn {
 }
 
 func idle(e *Elevator) stateFn {
-	// Keep checking for new reqests. It's really not necessary to lock
-	// the mutex where reading repeatedly in a loop like this. A faulty
-	// read out does no harm.
 	for floor := 0; floor < elev.NumFloors; floor++ {
-		if e.requests[floor][elev.Up] || e.requests[floor][elev.Down] {
-			if floor == e.floor && e.requests[floor][elev.Up] {
+		if e.requests[floor][indexOf(elev.Up)] || e.requests[floor][indexOf(elev.Down)] {
+			if floor == e.floor && e.requests[floor][indexOf(elev.Up)] {
 				e.clearRequest(floor, elev.Up)
 				e.clearRequest(floor, elev.Down) // clear both directions
 				e.direction = elev.Up
 				return doorsOpen
-			} else if floor == e.floor && e.requests[floor][elev.Down] {
+			} else if floor == e.floor && e.requests[floor][indexOf(elev.Down)] {
 				e.clearRequest(floor, elev.Up) // clear both directions
 				e.clearRequest(floor, elev.Down)
 				e.direction = elev.Down
@@ -221,10 +219,6 @@ func (e *Elevator) clearRequest(floor int, dir elev.Direction) {
 	if (floor == 0 && dir == elev.Down) || (floor == elev.NumFloors-1 && dir == elev.Up) {
 		return // invalid request
 	}
-	e.requests[floor][dir] = false
-	if dir == elev.Up {
-		e.panel.Reset(elev.CallUp, floor)
-	} else {
-		e.panel.Reset(elev.CallDown, floor)
-	}
+	e.requests[floor][indexOf(dir)] = false
+	e.panel.Reset(btnFromDir(dir), floor)
 }

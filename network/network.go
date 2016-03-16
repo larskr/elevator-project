@@ -199,7 +199,7 @@ func (n *Node) ReceiveMyMessage() *Message {
 }
 
 func (n *Node) ReceiveMessage() *Message {
-	return <-n.fromUserToUser
+	return <-n.fromUserToOther
 }
 
 func (n *Node) ForwardMessage(msg *Message) {

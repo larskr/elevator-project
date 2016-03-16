@@ -8,22 +8,24 @@ import (
 
 const pollInterval = 25 * time.Millisecond
 
-type Request struct {
-	Floor     int
-	Direction elev.Direction
-}
 
+// Panel holds the state of the elevator panel.
 type Panel struct {
 	Requests chan Request
-	Commands chan int
+	Commands chan int     
 
 	lamps  [elev.NumFloors][3]bool
 }
 
 func (p *Panel) Start() {
-	p.Requests = make(chan Request, 2*elev.NumFloors)
+	p.Requests = make(chan Request, maxRequests)
 	p.Commands = make(chan int)
 	go p.poll()
+}
+
+func (p *Panel) Set(b elev.Button, floor int) {
+	elev.SetButtonLamp(b, floor, 1)
+	p.lamps[floor][b] = true
 }
 
 func (p *Panel) Reset(b elev.Button, floor int) {
@@ -44,7 +46,7 @@ func (p *Panel) poll() {
 						Direction: elev.Up,
 					}
 					elev.SetButtonLamp(elev.CallUp, floor, 1)
-					p.lamps[floor][elev.CallUp].on = true
+					p.lamps[floor][elev.CallUp] = true
 				}
 			}
 			prev[floor][elev.CallUp] = v
@@ -57,7 +59,7 @@ func (p *Panel) poll() {
 						Direction: elev.Down,
 					}
 					elev.SetButtonLamp(elev.CallDown, floor, 1)
-					p.lamps[floor][elev.CallDown].on = true
+					p.lamps[floor][elev.CallDown] = true
 				}
 			}
 			prev[floor][elev.CallDown] = v
@@ -68,7 +70,7 @@ func (p *Panel) poll() {
 					select {
 					case p.Commands <- floor:
 						elev.SetButtonLamp(elev.Command, floor, 1)
-						p.lamps[floor][elev.Command].on = true
+						p.lamps[floor][elev.Command] = true
 					default: // don't block
 					}
 				}
