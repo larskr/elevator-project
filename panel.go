@@ -27,8 +27,8 @@ func (p *Panel) Start() {
 }
 
 func (p *Panel) Reset(b elev.Button, floor int) {
-	p.lamps[floor][b] = false
 	elev.SetButtonLamp(b, floor, 0)
+	p.lamps[floor][b] = false
 }
 
 func (p *Panel) poll() {

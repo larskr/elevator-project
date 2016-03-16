@@ -28,11 +28,12 @@ type Elevator struct {
 }
 
 func NewElevator(p *Panel) *Elevator {
-	e := new(Elevator)
-	e.panel = p
-	e.direction = elev.Stop
-	e.dest = make(map[int]bool)
-	e.queue = make(chan Request, 2*elev.NumFloors)
+	e := &Elevator{
+		panel:     p,
+		direction: elev.Stop,
+		dest:      make(map[int]bool),
+		queue:     make(chan Request, 2*elev.NumFloors),
+	}
 	return e
 }
 
@@ -46,8 +47,8 @@ func (e *Elevator) Add(req Request) {
 
 func (e *Elevator) run() {
 	for e.state = start; e.state != nil; {
-		
-	empty:  // empty request queue
+
+	empty: // empty request queue
 		for {
 			select {
 			case req := <-e.queue:
@@ -111,8 +112,9 @@ func atFloor(e *Elevator) stateFn {
 		// do the following:
 		//                               (insert opposite dir here)
 		//                                            v
-		// if len(e.dest) == 0 && e.request[e.floor][...] == 1 {
+		// if len(e.dest) == 0 && e.request[e.floor][...] {
 		//         e.clearRequest(e.floor, ...)
+		//         e.direction = ...
 		// }
 
 		if e.requests[e.floor][e.direction] {
@@ -209,7 +211,7 @@ func idle(e *Elevator) stateFn {
 			return gotoFloor
 		}
 	}
-	
+
 	time.Sleep(100 * time.Millisecond)
 
 	return idle
