@@ -5,6 +5,16 @@ import (
 	"errors"
 )
 
+//   bits | signed  unsigned   float
+//   -----+-------------------------
+//      8 |   c        C         
+//     16 |   h        H         f
+//     32 |   l        L         d
+//     64 |   q        Q         g
+//
+// Data corresponding with characters with number prefix is interpreted as
+// slices where the prefix gives the length. Underscores denotes padding.
+//
 func Pack(p []byte, format string, data ...interface{}) (n int, err error) {
 	var prefix, k int
 	for _, c := range format {
@@ -16,17 +26,17 @@ func Pack(p []byte, format string, data ...interface{}) (n int, err error) {
 			prefix = 1
 		}
 		switch {
-		case c == 'u' && prefix == 1:
+		case c == 'L' && prefix == 1:
 			v := data[k].(uint32)
 			binary.BigEndian.PutUint32(p, v)
 			p = p[4:]
 			n += 4
-		case c == 'b' && prefix == 1:
+		case c == 'C' && prefix == 1:
 			v := data[k].(uint8)
 			p[0] = v
 			p = p[1:]
 			n += 1
-		case c == 'b' && prefix > 1:
+		case c == 'C' && prefix > 1:
 			v := data[k].([]uint8)
 			copy(p, v[:prefix])
 			p = p[prefix:]

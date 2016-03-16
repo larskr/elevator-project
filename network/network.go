@@ -7,6 +7,7 @@
 package network
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -25,7 +26,7 @@ const (
 
 const (
 	bufferSize     = 32
-	maxDataLength  = 248
+	maxDataLength  = 244
 	maxResendCount = 5
 	maxReadCount   = 100
 	maxResenders   = 100
@@ -48,9 +49,8 @@ const (
 // that should be sent.
 type Message struct {
 	ID        uint32
-	Type      uint8
-	ReadCount uint8
-	_         uint16
+	Type      uint32
+	ReadCount uint32
 	buf       [maxDataLength]byte
 
 	Data []byte // points into buf
@@ -58,8 +58,8 @@ type Message struct {
 
 // NewMessage allocates and initializes a Message copying from the data
 // slice.
-func NewMessage(mtype uint8, data []byte) *Message {
-	msg := &Message{ID: rand.Uint32(), Type: uint8(mtype)}
+func NewMessage(mtype uint32, data []byte) *Message {
+	msg := &Message{ID: rand.Uint32(), Type: uint32(mtype)}
 	n := 0
 	if data != nil {
 		n = copy(msg.buf[:], data)
@@ -340,7 +340,7 @@ func (n *Node) restoreNetwork() error {
 			deadNode:   deadNode,
 			senderNode: n.thisNode,
 		}
-		Pack(data[:], "16b16b", kd.deadNode[:], n.thisNode[:])
+		Pack(data[:], "16C16C", kd.deadNode[:], n.thisNode[:])
 		n.addResender(NewMessage(KICK, data[:]), kickResendInterval)
 
 		n.aliveTimer.Reset(aliveTime)
@@ -354,7 +354,7 @@ func (n *Node) restoreNetwork() error {
 
 func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	msg := new(Message)
-	Unpack(umsg.payload, "ubb", &msg.ID, &msg.Type, &msg.ReadCount)
+	Unpack(umsg.payload, "LLL", &msg.ID, &msg.Type, &msg.ReadCount)
 	nc := copy(msg.buf[:], umsg.payload[8:])
 	msg.Data = msg.buf[:nc]
 
@@ -387,7 +387,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	case HELLO:
 		if n.state == disconnected {
 			var hd helloData
-			Unpack(msg.Data, "16b16b16b",
+			Unpack(msg.Data, "16C16C16C",
 				hd.newRight[:], hd.newLeft[:], hd.newLeft2nd[:])
 
 			n.rightNode = hd.newRight
@@ -430,7 +430,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 
 	case UPDATE:
 		var ud updateData
-		Unpack(msg.Data, "16b16b16b",
+		Unpack(msg.Data, "16C16C16C",
 			ud.right[:], ud.left[:], ud.left2nd[:])
 
 		if !ud.right.IsZero() {
@@ -482,8 +482,7 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 	case KICK:
 		if n.state == connected {
 			var kick kickData
-			Unpack(msg.Data, "16b16b", kick.deadNode[:],
-				kick.senderNode[:])
+			Unpack(msg.Data, "16C16C", kick.deadNode[:], kick.senderNode[:])
 
 			select {
 			case n.deadNodes <- kick.deadNode:
@@ -545,26 +544,26 @@ func (n *Node) removeResender(re *resender) {
 	delete(n.resenders, re.msg.ID)
 }
 
-func (n *Node) sendData(to Addr, mtype uint8, data interface{}) {
+func (n *Node) sendData(to Addr, mtype uint32, data interface{}) {
 	umsg := &UDPMessage{to: to, from: n.thisNode}
-	Pack(umsg.buf[:], "ub3_", rand.Uint32(), mtype)
-	umsg.payload = umsg.buf[:8]
+	Pack(umsg.buf[:], "LL", rand.Uint32(), mtype)
+	umsg.payload = umsg.buf[:12]
 	if data != nil {
 		var np int
 		switch d := data.(type) {
 		case *helloData:
-			np, _ = Pack(umsg.buf[8:], "16b16b16b",
+			np, _ = Pack(umsg.buf[8:], "16C16C16C",
 				d.newRight[:], d.newLeft[:], d.newLeft2nd[:])
 		case *updateData:
-			np, _ = Pack(umsg.buf[8:], "16b16b16b",
+			np, _ = Pack(umsg.buf[8:], "16C16C16C",
 				d.right[:], d.left[:], d.left2nd[:])
 		case *kickData:
-			np, _ = Pack(umsg.buf[8:], "16b16b",
+			np, _ = Pack(umsg.buf[8:], "16C16C",
 				d.deadNode[:], d.senderNode[:])
 		default:
 			log.Printf("Unknown message data.")
 		}
-		umsg.payload = umsg.buf[:np+8]
+		umsg.payload = umsg.buf[:np+12]
 	}
 	n.udp.Send(umsg)
 }
@@ -572,10 +571,10 @@ func (n *Node) sendData(to Addr, mtype uint8, data interface{}) {
 func (n *Node) forwardMsg(msg *Message) {
 	umsg := &UDPMessage{to: n.leftNode, from: n.thisNode}
 
-	Pack(umsg.buf[:], "ubb", msg.ID, msg.Type, msg.ReadCount)
-	nc := copy(umsg.buf[8:], msg.Data)
+	Pack(umsg.buf[:], "LLL", msg.ID, msg.Type, msg.ReadCount)
+	nc := copy(umsg.buf[12:], msg.Data)
 
-	umsg.payload = umsg.buf[:nc+8]
+	umsg.payload = umsg.buf[:nc+12]
 	n.udp.Send(umsg)
 }
 
