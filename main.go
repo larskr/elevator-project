@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"os/signal"
 	
 	"github.com/BurntSushi/toml"
 
@@ -38,17 +39,27 @@ func main() {
 
 	msgs := make(chan *network.Message)
 	go receiveLoop(node, msgs)
+
+	// Stop the elevator with Ctrl+C.
+	interruptc := make(chan os.Signal)
+	signal.Notify(interruptc, os.Interrupt)
 	
 	for {
 		select {
 		case req := <-panel.Requests:
 			fmt.Printf("Request: floor %v, direction %v\n", req.Floor, req.Direction)
-			sendData(node, PANEL, &panelData{
-				floor: req.Floor,
-				button: btnFromDir(req.Direction),
-				on: true,
-			})
-			fmt.Println("Panel data sent.")
+			elevator.Add(req)
+			if node.IsConnected() {
+				sendData(node, PANEL, &panelData{
+					floor: req.Floor,
+					button: btnFromDir(req.Direction),
+					on: true,
+				})
+				fmt.Println("Panel data sent.")
+			}
+		case <-interruptc:
+			elev.SetMotorDirection(elev.Stop)
+			os.Exit(1)
 		case msg := <-msgs:
 			var pd panelData
 			unpackData(msg.Data, &pd)
