@@ -1,0 +1,63 @@
+#!/bin/bash
+
+subnet="129.241.187";
+remote_dir="/var/tmp/group79";
+repo="https://github.com/larskr/elevator-project.git";
+branch="lars-dev";
+
+if [ $# -eq 0 ]; then
+    echo "Usage: ./setup.sh [--auth] <list of last byte of the IPs>";
+fi
+
+# Check --auth option.
+if [ $1 -eq "--auth" ]; then
+    auth=1;
+fi
+
+for ip in $@; do
+    ping -c 1 -W 1 $subnet.$ip > /dev/null
+    
+    if [ $? -eq 0 ]; then
+
+	# Install ssh public key on remote if --auth is used.
+	if $auth && [ -r "$HOME/.ssh/id_rsa.pub" ]; then
+	    cat $HOME/.ssh/id_rsa.pub \
+		| ssh $subnet.$ip 'mkdir -p .ssh; cat >> .ssh/authorized_keys';
+	    if [ $? -eq 0 ]; then
+		echo $subnet.$ip "authorized";
+	    fi
+	    exit;
+	else
+	    echo "No public key. Run ssh-keygen -t rsa.";
+	    exit;
+	fi
+
+	
+	if (ssh $subnet.$ip "[ ! -d $remote_dir ]"); then
+	    gnome-terminal -x ssh -t $subnet.$ip 'bash -s' <<EOF
+			GOPATH=$remote_dir
+			mkdir -p $remote_dir
+			cd $remote_dir
+			mkdir 'src' 'bin' 'pkg'
+			cd src
+			git clone $repo
+			cd elevator-project
+			git checkout $branch
+			make get-pkgs
+			make
+			clear
+			./elevator
+EOF
+	else
+	    gnome-terminal -x ssh -t $subnet.$ip 'bash -s' <<EOF
+			GOPATH=$remote_dir
+			cd $remote_dir/src/elevator-project
+			git pull origin $branch
+			make
+			clear
+			./elevator
+EOF	    
+	fi
+	
+    fi
+done

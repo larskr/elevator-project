@@ -1,10 +1,10 @@
-#!/usr/bin/env sh
+#!/bin/bash
 
 interface="en0"
 
 if [ $# -eq 0 ]
 then
-    echo "Usage: ./monitor-network -i <interface> [-w <file>|-r <file>]";
+    echo "Usage: ./network-dump [-v|-vv] [-X] -i <interface> -f <msgtypes> [-w|-r <file>]";
     exit 1;
 fi
     
@@ -34,4 +34,4 @@ elif [ "$write_file" != "" ]; then
 fi
 
 tcpdump -i $interface udp port 2048 -n -l -vv -X $options\
-    | gawk -f monitor-network.awk $hex $filter;
+    | gawk -f network-format.awk $hex $filter;
