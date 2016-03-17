@@ -7,7 +7,7 @@ import (
 
 type Config struct {
 	Interface string
-	UseIPv6 bool
+	Protocol  string
 }
 
 var config Config

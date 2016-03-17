@@ -22,12 +22,11 @@ while [ $# -gt 0 ]; do
 	cd ../..;
 	export GOPATH=$(pwd);
 	cd src/elevator-project;
-	make get-pkgs;
 	git config --local user.name "Lars André Kristiansen"
 	git config --local user.email larsakr@gmail.com
 	exit;
-    elif [ $1 == "--clean" ]; then
-	
+    elif [ $1 = "--clean" ]; then
+	clean=1;
     else
 	break;
     fi
@@ -48,6 +47,7 @@ for ip in $@; do
 		if [ $? -eq 0 ]; then
 		    echo $subnet.$ip "authorized";
 		fi
+		continue;
 	    else
 		echo "No public key. Run ssh-keygen -t rsa.";
 		exit;
@@ -56,13 +56,14 @@ for ip in $@; do
 
 	if [ $clean -eq 1 ]; then
 	    if (ssh $subnet.$ip "[ -d $remote_dir ]"); then
-		ssh $subnet.$ip "rm -rI $remote_dir;";
+		ssh $subnet.$ip "echo Deleting $remote_dir.; rm -rI $remote_dir;";
 	    fi
+	    continue;
 	fi
 
 	
 	if (ssh $subnet.$ip "[ ! -d $remote_dir ]"); then
-	    gnome-terminal -x ssh -t $subnet.$ip \
+	    gnome-terminal -t "$subnet.$ip" -x ssh -t $subnet.$ip \
 			"export GOPATH=$remote_dir;"\
 			"mkdir -p $remote_dir;"\
 			"cd $remote_dir;"\
@@ -71,17 +72,16 @@ for ip in $@; do
 			"git clone $repo;"\
 			"cd elevator-project;"\
 			"git checkout $branch;"\
-			"make get-pkgs;"\
-			"make;"\
+			"go build -o elevator;"\
 			"clear;"\
 			"./elevator;"
 	else
-	    gnome-terminal -x ssh -t $subnet.$ip \
+	    gnome-terminal -t "$subnet.$ip" -x ssh -t $subnet.$ip \
 			"export GOPATH=$remote_dir;"\
 			"cd $remote_dir/src/elevator-project;"\
 			"git fetch origin lars-dev;"\
 			"git reset --hard origin/$branch;"\
-			"make;"\
+			"go build -o elevator;"\
 			"clear;"\
 			"./elevator;"
 	fi

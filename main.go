@@ -1,30 +1,27 @@
 package main
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	
-	"github.com/BurntSushi/toml"
-
 	"elevator-project/elev"
 	"elevator-project/network"
 )
 
-type tomlConfig struct {
-	Elevator elev.Config
-	Network  network.Config
-}
-
 func main() {
-	var config tomlConfig
-	if _, err := toml.DecodeFile("./config", &config); err != nil {
+	conf, err := loadConfig("./config")
+	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	elev.LoadConfig(&config.Elevator)
-	network.LoadConfig(&config.Network)
+	elev.LoadConfig(&conf.elevator)
+	network.LoadConfig(&conf.network)
 
 	elev.Init()
 	
@@ -128,6 +125,69 @@ func sendData(node *network.Node, dtype network.MsgType, data interface{}) uint3
 	node.SendMessage(msg)
 	return msg.ID
 }
-		
 
+type config struct {
+	elevator elev.Config
+	network  network.Config
+}
+
+func loadConfig(filename string) (*config, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	settings := make(map[string]string)
+	
+	r := bufio.NewReader(f)
+	var line, prefix string
+	for err != io.EOF {
+		line, err = r.ReadString('\n')
+		line = strings.TrimSpace(line)
+		
+		if len(line) == 0 {
+			prefix = ""
+			continue
+		}
+		
+		if line[0] == '[' {
+			i := 1
+			for ; line[i] != ']'; i++ {}
+			prefix = line[1:i]
+		} else {
+			i := 0
+			for ; line[i] != ' ' && i < len(line); i++ {}
+			field := line[:i]
+			for ; line[i] != '=' && i < len(line); i++ {}
+			val := strings.TrimSpace(line[i+1:])
+			if prefix != "" {
+				str := fmt.Sprintf("%v.%v", prefix, field)
+				settings[str] = val
+			} else {
+				settings[field] = val
+			}
+		}
+	}
+	
+	c := new(config)
+	for field, valstr := range settings {
+		switch field {
+		case "elevator.motor_speed":
+			c.elevator.MotorSpeed, _ = strconv.Atoi(valstr)
+		case "elevator.use_simulator":
+			if valstr == "true" {
+				c.elevator.UseSimulator = true
+			}
+		case "elevator.simulator_port":
+			c.elevator.SimulatorPort, _ = strconv.Atoi(valstr)
+		case "elevator.simulator_ip":
+			c.elevator.SimulatorIP = valstr
+		case "network.interface":
+			c.network.Interface = valstr
+		case "network.protocol":
+			c.network.Protocol = valstr
+		}
+	}	
+	
+	return c, nil
+}
 
