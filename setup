@@ -4,6 +4,7 @@ subnet="129.241.187";
 remote_dir="/var/tmp/group79";
 repo="https://github.com/larskr/elevator-project.git";
 branch="lars-dev";
+auth=0;
 
 if [ $# -eq 0 ]; then
     echo "Usage: ./setup.sh [--auth] <list of last byte of the IPs>";
@@ -11,22 +12,24 @@ if [ $# -eq 0 ]; then
 fi
 
 # Read in options.
-for $opt in $@; do
+while [ $# -gt 0 ]; do
     
     # Check --auth option.
-    if [ $opt -eq "--auth" ]; then
+    if [ $1 = "--auth" ]; then
 	auth=1;
-    fi
-
-    if [ $opt -eq "--workspace" ]; then
-	cd ..
+    elif [ $1 = "--workspace" ]; then
+	cd ../..;
 	export GOPATH=$(pwd);
-	cd src
+	cd src/elevator-project;
 	make get-pkgs;
 	git config --local user.name "Lars André Kristiansen"
 	git config --local user.email larsakr@gmail.com
+	exit;
+    else
+	break;
     fi
 
+    shift;
 done
 
 for ip in $@; do
@@ -35,43 +38,43 @@ for ip in $@; do
     if [ $? -eq 0 ]; then
 
 	# Install ssh public key on remote if --auth is used.
-	if $auth && [ -r "$HOME/.ssh/id_rsa.pub" ]; then
-	    cat $HOME/.ssh/id_rsa.pub \
-		| ssh $subnet.$ip 'mkdir -p .ssh; cat >> .ssh/authorized_keys';
-	    if [ $? -eq 0 ]; then
-		echo $subnet.$ip "authorized";
-	    fi
-	    exit;
-	else
-	    echo "No public key. Run ssh-keygen -t rsa.";
-	    exit;
+	if [ $auth -eq 1 ]; then
+	    if [ -r "$HOME/.ssh/id_rsa.pub" ]; then
+		cat $HOME/.ssh/id_rsa.pub \
+		    | ssh $subnet.$ip 'mkdir -p .ssh; cat >> .ssh/authorized_keys';
+		if [ $? -eq 0 ]; then
+		    echo $subnet.$ip "authorized";
+		fi
+		exit;
+	    else
+		echo "No public key. Run ssh-keygen -t rsa.";
+		exit;
+	fi
 	fi
 
 	
 	if (ssh $subnet.$ip "[ ! -d $remote_dir ]"); then
-	    gnome-terminal -x ssh -t $subnet.$ip 'bash -s' <<EOF
-			export GOPATH=$remote_dir
-			mkdir -p $remote_dir
-			cd $remote_dir
-			mkdir 'src' 'bin' 'pkg'
-			cd src
-			git clone $repo
-			cd elevator-project
-			git checkout $branch
-			make get-pkgs
-			make
-			clear
-			./elevator
-EOF
+	    gnome-terminal -x ssh -t $subnet.$ip \
+			"export GOPATH=$remote_dir;"\
+			"mkdir -p $remote_dir;"\
+			"cd $remote_dir;"\
+			"mkdir 'src' 'bin' 'pkg';"\
+			"cd src;"\
+			"git clone $repo;"\
+			"cd elevator-project;"\
+			"git checkout $branch;"\
+			"make get-pkgs;"\
+			"make;"\
+			"clear;"\
+			"./elevator;"
 	else
-	    gnome-terminal -x ssh -t $subnet.$ip 'bash -s' <<EOF
-			export GOPATH=$remote_dir
-			cd $remote_dir/src/elevator-project
-			git pull origin $branch
-			make
-			clear
-			./elevator
-EOF
+	    gnome-terminal -x ssh -t $subnet.$ip \
+			"export GOPATH=$remote_dir;"\
+			"cd $remote_dir/src/elevator-project;"\
+			"git pull origin $branch;"\
+			"make;"\
+			"clear;"\
+			"./elevator;"
 	fi
     else
 	echo $subnet.$ip "not responding";
