@@ -5,6 +5,7 @@ remote_dir="/var/tmp/group79";
 repo="https://github.com/larskr/elevator-project.git";
 branch="lars-dev";
 auth=0;
+clean=0;
 
 if [ $# -eq 0 ]; then
     echo "Usage: ./setup.sh [--auth] <list of last byte of the IPs>";
@@ -25,6 +26,8 @@ while [ $# -gt 0 ]; do
 	git config --local user.name "Lars André Kristiansen"
 	git config --local user.email larsakr@gmail.com
 	exit;
+    elif [ $1 == "--clean" ]; then
+	
     else
 	break;
     fi
@@ -45,11 +48,16 @@ for ip in $@; do
 		if [ $? -eq 0 ]; then
 		    echo $subnet.$ip "authorized";
 		fi
-		exit;
 	    else
 		echo "No public key. Run ssh-keygen -t rsa.";
 		exit;
+	    fi
 	fi
+
+	if [ $clean -eq 1 ]; then
+	    if (ssh $subnet.$ip "[ -d $remote_dir ]"); then
+		ssh $subnet.$ip "rm -rI $remote_dir;";
+	    fi
 	fi
 
 	
@@ -71,7 +79,8 @@ for ip in $@; do
 	    gnome-terminal -x ssh -t $subnet.$ip \
 			"export GOPATH=$remote_dir;"\
 			"cd $remote_dir/src/elevator-project;"\
-			"git pull origin $branch;"\
+			"git fetch origin lars-dev;"\
+			"git reset --hard origin/$branch;"\
 			"make;"\
 			"clear;"\
 			"./elevator;"

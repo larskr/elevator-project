@@ -25,10 +25,15 @@ func NewPanel() *Panel {
 }
 
 func (p *Panel) Start() {
+	for floor := 0; floor < elev.NumFloors; floor++ {
+		elev.SetButtonLamp(elev.CallUp, floor, 0)
+		elev.SetButtonLamp(elev.CallDown, floor, 0)
+		elev.SetButtonLamp(elev.Command, floor, 0)
+	}
 	go p.poll()
 }
 
-func (p *Panel) Set(b elev.Button, floor int, on bool) {
+func (p *Panel) SetLamp(b elev.Button, floor int, on bool) {
 	if on {
 		elev.SetButtonLamp(b, floor, 1)
 		p.lamps[floor][b] = true
@@ -36,11 +41,6 @@ func (p *Panel) Set(b elev.Button, floor int, on bool) {
 		elev.SetButtonLamp(b, floor, 0)
 		p.lamps[floor][b] = false
 	}
-}
-
-func (p *Panel) Reset(b elev.Button, floor int) {
-	elev.SetButtonLamp(b, floor, 0)
-	p.lamps[floor][b] = false
 }
 
 func (p *Panel) poll() {

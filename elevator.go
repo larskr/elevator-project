@@ -100,7 +100,7 @@ func atFloor(e *Elevator) stateFn {
 			delete(e.dest, e.floor)
 
 			// Update lamps on internal elevator panel.
-			e.panel.Reset(elev.Command, e.floor)
+			e.panel.SetLamp(elev.Command, e.floor, false)
 
 			// We clear all requests (up and down) if we stop. This assumes
 			// passengers will accept travelling in the wrong direction for a
@@ -220,5 +220,5 @@ func (e *Elevator) clearRequest(floor int, dir elev.Direction) {
 		return // invalid request
 	}
 	e.requests[floor][indexOfDir(dir)] = false
-	e.panel.Reset(btnFromDir(dir), floor)
+	e.panel.SetLamp(btnFromDir(dir), floor, false)
 }

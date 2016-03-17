@@ -63,7 +63,7 @@ func main() {
 		case msg := <-msgs:
 			var pd panelData
 			unpackData(msg.Data, &pd)
-			panel.Set(pd.button, pd.floor, pd.on)
+			panel.SetLamp(pd.button, pd.floor, pd.on)
 			fmt.Println("Panel data received.")
 			node.ForwardMessage(msg)
 		}
