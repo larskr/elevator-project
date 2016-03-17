@@ -48,7 +48,7 @@ func main() {
 		select {
 		case req := <-panel.Requests:
 			fmt.Printf("Request: floor %v, direction %v\n", req.Floor, req.Direction)
-			elevator.Add(req)
+			//elevator.Add(req)
 			if node.IsConnected() {
 				sendData(node, PANEL, &panelData{
 					floor: req.Floor,

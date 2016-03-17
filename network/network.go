@@ -16,12 +16,12 @@ import (
 )
 
 const (
-	aliveTime          = 500 * time.Millisecond
-	kickTime           = 2500 * time.Millisecond
-	broadcastTime      = 5000 * time.Millisecond
-	msgResendInterval  = 2000 * time.Millisecond
-	kickResendInterval = 200 * time.Millisecond
-	lonelyDelay        = 1000 * time.Millisecond
+	aliveTime          = 50 * time.Millisecond
+	kickTime           = 250 * time.Millisecond
+	broadcastTime      = 500 * time.Millisecond
+	msgResendInterval  = 200 * time.Millisecond
+	kickResendInterval = 20 * time.Millisecond
+	lonelyDelay        = 100 * time.Millisecond
 )
 
 const (
