@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/rand"
 	"time"
 
 	"elevator-project/elev"
@@ -44,6 +45,10 @@ func (e *Elevator) Start() {
 
 func (e *Elevator) Add(req Request) {
 	e.queue <- req
+}
+
+func (e *Elevator) SimulateCost(req Request) float64 {
+	return rand.Float64()
 }
 
 func (e *Elevator) run() {

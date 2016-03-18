@@ -5,11 +5,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
-	
+
 	"elevator-project/elev"
 	"elevator-project/network"
 )
@@ -24,23 +26,26 @@ func main() {
 	network.LoadConfig(&conf.network)
 
 	elev.Init()
-	
+
 	node := network.NewNode()
 	node.Start()
-	
+
 	panel := NewPanel()
 	panel.Start()
 
 	elevator := NewElevator(panel)
 	elevator.Start()
 
-	msgs := make(chan *network.Message)
-	go receiveLoop(node, msgs)
+	
+	msgsFromOther := make(chan *network.Message)
+	msgsFromThis := make(chan *network.Message)
+	go receiveMsgs(node, msgsFromOther)
+	go receiveMyMsgs(node, msgsFromThis)
 
 	// Stop the elevator with Ctrl+C.
 	interruptc := make(chan os.Signal)
 	signal.Notify(interruptc, os.Interrupt)
-	
+
 	for {
 		select {
 		case req := <-panel.Requests:
@@ -48,42 +53,90 @@ func main() {
 			//elevator.Add(req)
 			if node.IsConnected() {
 				sendData(node, PANEL, &panelData{
-					floor: req.Floor,
+					floor:  req.Floor,
 					button: btnFromDir(req.Direction),
-					on: true,
+					on:     true,
+				})
+				sendData(node, COST, &costData{
+					elevator: node.Addr(),
+					req: req,
+					cost: 1.0,
 				})
 				fmt.Println("Panel data sent.")
 			}
 		case <-interruptc:
 			elev.SetMotorDirection(elev.Stop)
 			os.Exit(1)
-		case msg := <-msgs:
-			var pd panelData
-			unpackData(msg.Data, &pd)
-			panel.SetLamp(pd.button, pd.floor, pd.on)
-			fmt.Println("Panel data received.")
+		case msg := <-msgsFromOther:
+			switch msg.Type {
+			case PANEL:
+				var pd panelData
+				unpackData(msg.Data, &pd)
+				panel.SetLamp(pd.button, pd.floor, pd.on)
+				fmt.Println("Panel data received.")
+			case COST:
+				var cd costData
+				unpackData(msg.Data, &cd)
+				cost := elevator.SimulateCost(cd.req)
+				if cost < cd.cost {
+					cd.elevator = node.Addr()
+					cd.cost = cost
+				}
+				packData(msg.Data, &cd)
+				fmt.Println("Cost message forwarded.")
+			case ASSIGN:
+			}
 			node.ForwardMessage(msg)
+		case msg := <-msgsFromThis:
+			switch msg.Type {
+			case COST:
+				var cd costData
+				unpackData(msg.Data, &cd)
+				fmt.Printf("Lowest cost %v for %v\n", cd.cost, net.IP(cd.elevator[:]))
+			case ASSIGN:
+			}
 		}
 	}
-	
+
 	os.Exit(0)
 }
 
-func receiveLoop(node *network.Node, msgs chan *network.Message) {
+func receiveMsgs(node *network.Node, msgs chan *network.Message) {
 	for {
 		msg := node.ReceiveMessage()
 		msgs <- msg
 	}
 }
 
+func receiveMyMsgs(node *network.Node, msgs chan *network.Message) {
+	for {
+		msg := node.ReceiveMyMessage()
+		msgs <- msg
+	}
+}
+
 const (
-	PANEL network.MsgType = 0x10
+	PANEL  network.MsgType = 0x10
+	COST   network.MsgType = 0x11
+	ASSIGN network.MsgType = 0x12
 )
 
 type panelData struct {
-	floor     int
-	button    elev.Button
-	on        bool
+	floor  int
+	button elev.Button
+	on     bool
+}
+
+type costData struct {
+	elevator network.Addr
+	req      Request
+	cost     float64
+}
+
+type assignData struct {
+	elevator network.Addr
+	req      Request
+	taken    bool
 }
 
 func packData(p []byte, data interface{}) int {
@@ -98,6 +151,21 @@ func packData(p []byte, data interface{}) int {
 			binary.BigEndian.PutUint32(p[8:], 0)
 		}
 		n = 12
+	case *costData:
+		copy(p[:], d.elevator[:])
+		binary.BigEndian.PutUint32(p[16:], uint32(d.req.Floor))
+		binary.BigEndian.PutUint32(p[20:], uint32(d.req.Direction))
+		binary.BigEndian.PutUint64(p[24:], math.Float64bits(d.cost))
+		n = 32
+	case *assignData:
+		copy(p[:], d.elevator[:])
+		binary.BigEndian.PutUint32(p[16:], uint32(d.req.Floor))
+		binary.BigEndian.PutUint32(p[20:], uint32(d.req.Direction))
+		if d.taken {
+			binary.BigEndian.PutUint32(p[24:], 1)
+		} else {
+			binary.BigEndian.PutUint32(p[24:], 0)
+		}
 	}
 	return n
 }
@@ -107,20 +175,31 @@ func unpackData(p []byte, data interface{}) {
 	case *panelData:
 		d.floor = int(binary.BigEndian.Uint32(p[:]))
 		d.button = elev.Button(binary.BigEndian.Uint32(p[4:]))
-		val := binary.BigEndian.Uint32(p[8:])
-		if val == 1 {
+		if binary.BigEndian.Uint32(p[8:]) == 1 {
 			d.on = true
+		}
+	case *costData:
+		copy(d.elevator[:], p[:])
+		d.req.Floor = int(binary.BigEndian.Uint32(p[16:]))
+		d.req.Direction = elev.Direction(binary.BigEndian.Uint32(p[20:]))
+		d.cost = math.Float64frombits(binary.BigEndian.Uint64(p[16:]))
+	case *assignData:
+		copy(d.elevator[:], p[:])
+		d.req.Floor = int(binary.BigEndian.Uint32(p[16:]))
+		d.req.Direction = elev.Direction(binary.BigEndian.Uint32(p[20:]))
+		if binary.BigEndian.Uint64(p[24:]) == 1 {
+			d.taken = true
 		}
 	}
 }
 
 // sendData sends a message with the data and returns the message ID.
 // The data struct to be sent must be implmented in packData/unpackData.
-func sendData(node *network.Node, dtype network.MsgType, data interface{}) uint32 {
+func sendData(node *network.Node, mtype network.MsgType, data interface{}) uint32 {
 	var buf [network.MaxDataLength]byte
 
 	n := packData(buf[:], data)
-	msg := network.NewMessage(dtype, buf[:n])
+	msg := network.NewMessage(mtype, buf[:n])
 
 	node.SendMessage(msg)
 	return msg.ID
@@ -137,27 +216,30 @@ func loadConfig(filename string) (*config, error) {
 		return nil, err
 	}
 	settings := make(map[string]string)
-	
+
 	r := bufio.NewReader(f)
 	var line, prefix string
 	for err != io.EOF {
 		line, err = r.ReadString('\n')
 		line = strings.TrimSpace(line)
-		
+
 		if len(line) == 0 {
 			prefix = ""
 			continue
 		}
-		
+
 		if line[0] == '[' {
 			i := 1
-			for ; line[i] != ']'; i++ {}
+			for ; line[i] != ']'; i++ {
+			}
 			prefix = line[1:i]
 		} else {
 			i := 0
-			for ; line[i] != ' ' && i < len(line); i++ {}
+			for ; line[i] != ' ' && i < len(line); i++ {
+			}
 			field := line[:i]
-			for ; line[i] != '=' && i < len(line); i++ {}
+			for ; line[i] != '=' && i < len(line); i++ {
+			}
 			val := strings.TrimSpace(line[i+1:])
 			if prefix != "" {
 				str := fmt.Sprintf("%v.%v", prefix, field)
@@ -167,7 +249,7 @@ func loadConfig(filename string) (*config, error) {
 			}
 		}
 	}
-	
+
 	c := new(config)
 	for field, valstr := range settings {
 		switch field {
@@ -186,8 +268,7 @@ func loadConfig(filename string) (*config, error) {
 		case "network.protocol":
 			c.network.Protocol = valstr
 		}
-	}	
-	
+	}
+
 	return c, nil
 }
-
