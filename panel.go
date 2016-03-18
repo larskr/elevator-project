@@ -25,11 +25,6 @@ func NewPanel() *Panel {
 }
 
 func (p *Panel) Start() {
-	for floor := 0; floor < elev.NumFloors; floor++ {
-		elev.SetButtonLamp(elev.CallUp, floor, 0)
-		elev.SetButtonLamp(elev.CallDown, floor, 0)
-		elev.SetButtonLamp(elev.Command, floor, 0)
-	}
 	go p.poll()
 }
 

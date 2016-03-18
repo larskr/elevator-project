@@ -24,6 +24,8 @@ func main() {
 	}
 	elev.LoadConfig(&conf.elevator)
 	network.LoadConfig(&conf.network)
+	
+	fmt.Println(conf.elevator.UseSimulator)
 
 	elev.Init()
 
@@ -85,6 +87,13 @@ func main() {
 				packData(msg.Data, &cd)
 				fmt.Println("Cost message forwarded.")
 			case ASSIGN:
+				var ad assignData
+				unpackData(msg.Data, &ad)
+				if ad.elevator == node.Addr() {
+					elevator.Add(ad.req)
+				}
+				ad.taken = true
+				packData(msg.Data, &ad)
 			}
 			node.ForwardMessage(msg)
 		case msg := <-msgsFromThis:
@@ -93,7 +102,14 @@ func main() {
 				var cd costData
 				unpackData(msg.Data, &cd)
 				fmt.Printf("Lowest cost %v for %v\n", cd.cost, net.IP(cd.elevator[:]))
+				sendData(node, ASSIGN, &assignData{
+					elevator: cd.elevator,
+					req: cd.req,
+				})
 			case ASSIGN:
+				var ad assignData
+				unpackData(msg.Data, &ad)
+				fmt.Printf("Got assign message back with taken = %v\n", ad.taken)
 			}
 		}
 	}
@@ -166,6 +182,7 @@ func packData(p []byte, data interface{}) int {
 		} else {
 			binary.BigEndian.PutUint32(p[24:], 0)
 		}
+		n = 28
 	}
 	return n
 }
@@ -182,12 +199,12 @@ func unpackData(p []byte, data interface{}) {
 		copy(d.elevator[:], p[:])
 		d.req.Floor = int(binary.BigEndian.Uint32(p[16:]))
 		d.req.Direction = elev.Direction(binary.BigEndian.Uint32(p[20:]))
-		d.cost = math.Float64frombits(binary.BigEndian.Uint64(p[16:]))
+		d.cost = math.Float64frombits(binary.BigEndian.Uint64(p[24:]))
 	case *assignData:
 		copy(d.elevator[:], p[:])
 		d.req.Floor = int(binary.BigEndian.Uint32(p[16:]))
 		d.req.Direction = elev.Direction(binary.BigEndian.Uint32(p[20:]))
-		if binary.BigEndian.Uint64(p[24:]) == 1 {
+		if binary.BigEndian.Uint32(p[24:]) == 1 {
 			d.taken = true
 		}
 	}
