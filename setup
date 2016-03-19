@@ -4,88 +4,67 @@ subnet="129.241.187";
 remote_dir="/var/tmp/group79";
 repo="https://github.com/larskr/elevator-project.git";
 branch="lars-dev";
-auth=0;
-clean=0;
 
 if [ $# -eq 0 ]; then
-    echo "Usage: ./setup.sh [--auth] <list of last byte of the IPs>";
+    echo "Usage: ./setup [-d] <list of last byte of the IPs>";
     exit;
 fi
 
-# Read in options.
-while [ $# -gt 0 ]; do
-    
-    # Check --auth option.
-    if [ $1 = "--auth" ]; then
-	auth=1;
-    elif [ $1 = "--workspace" ]; then
-	cd ../..;
-	export GOPATH=$(pwd);
-	cd src/elevator-project;
-	git config --local user.name "Lars André Kristiansen"
-	git config --local user.email larsakr@gmail.com
-	exit;
-    elif [ $1 = "--clean" ]; then
-	clean=1;
-    else
-	break;
-    fi
-
+dflag='';
+while getopts 'd' flag; do
+    case "${flag}" in
+	d) dflag='true' ;;
+	*) exit ;;
+    esac
     shift;
 done
 
 for ip in $@; do
-    ping -c 1 -W 1 $subnet.$ip > /dev/null
+    ping -c 1 -W 1 "${subnet}.${ip}" > /dev/null
     
-    if [ $? -eq 0 ]; then
+    if [[ $? -eq 0 ]]; then
 
-	# Install ssh public key on remote if --auth is used.
-	if [ $auth -eq 1 ]; then
-	    if [ -r "$HOME/.ssh/id_rsa.pub" ]; then
-		cat $HOME/.ssh/id_rsa.pub \
-		    | ssh $subnet.$ip 'mkdir -p .ssh; cat >> .ssh/authorized_keys';
-		if [ $? -eq 0 ]; then
-		    echo $subnet.$ip "authorized";
-		fi
-		continue;
-	    else
-		echo "No public key. Run ssh-keygen -t rsa.";
-		exit;
+	# Install public ssh key on remote.
+	if [[ -r "${HOME}/.ssh/id_rsa.pub" ]]; then
+	    cat "${HOME}/.ssh/id_rsa.pub" \
+		| ssh "${subnet}.${ip}" 'mkdir -p .ssh; cat >> .ssh/authorized_keys';
+	    if [ $? -eq 0 ]; then
+		echo "${subnet}.${ip} authorized";
 	    fi
 	fi
-
-	if [ $clean -eq 1 ]; then
-	    if (ssh $subnet.$ip "[ -d $remote_dir ]"); then
-		ssh $subnet.$ip "echo Deleting $remote_dir.; rm -rI $remote_dir;";
+	
+	if [[ "${dflag}" = "true" ]]; then
+	    if (ssh "${subnet}.${ip}" "[[ -d ${remote_dir} ]]"); then
+		ssh "${subnet}.${ip}" \
+		    "echo Deleting ${remote_dir} on ${subnet}.${ip}; rm -rI ${remote_dir};";
 	    fi
 	    continue;
 	fi
-
 	
-	if (ssh $subnet.$ip "[ ! -d $remote_dir ]"); then
-	    gnome-terminal -t "$subnet.$ip" -x ssh -t $subnet.$ip \
-			"export GOPATH=$remote_dir;"\
-			"mkdir -p $remote_dir;"\
-			"cd $remote_dir;"\
+	if (ssh "${subnet}.${ip}" "[[ ! -d ${remote_dir} ]]"); then
+	    gnome-terminal -t "${subnet}.${ip}" -x ssh -t "${subnet}.${ip}" \
+			"export GOPATH=${remote_dir};"\
+			"mkdir -p ${remote_dir};"\
+			"cd ${remote_dir};"\
 			"mkdir 'src' 'bin' 'pkg';"\
 			"cd src;"\
-			"git clone $repo;"\
+			"git clone ${repo};"\
 			"cd elevator-project;"\
-			"git checkout $branch;"\
+			"git checkout ${branch};"\
 			"go build -o elevator;"\
 			"clear;"\
 			"./elevator;"
 	else
-	    gnome-terminal -t "$subnet.$ip" -x ssh -t $subnet.$ip \
-			"export GOPATH=$remote_dir;"\
-			"cd $remote_dir/src/elevator-project;"\
-			"git fetch origin lars-dev;"\
-			"git reset --hard origin/$branch;"\
+	    gnome-terminal -t "${subnet}.${ip}" -x ssh -t "${subnet}.${ip}" \
+			"export GOPATH=${remote_dir};"\
+			"cd ${remote_dir}/src/elevator-project;"\
+			"git fetch origin ${branch};"\
+			"git reset --hard origin/${branch};"\
 			"go build -o elevator;"\
 			"clear;"\
 			"./elevator;"
 	fi
     else
-	echo $subnet.$ip "not responding";
+	echo "${subnet}.${ip} not responding";
     fi
 done
