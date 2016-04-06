@@ -91,8 +91,8 @@ func main() {
 				unpackData(msg.Data, &ad)
 				if ad.elevator == node.Addr() {
 					elevator.Add(ad.req)
+					ad.taken = true
 				}
-				ad.taken = true
 				packData(msg.Data, &ad)
 			}
 			node.ForwardMessage(msg)

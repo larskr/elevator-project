@@ -3,7 +3,7 @@
 subnet="129.241.187";
 remote_dir="/var/tmp/group79";
 repo="https://github.com/larskr/elevator-project.git";
-branch="lars-dev";
+branch="master";
 
 if [ $# -eq 0 ]; then
     echo "Usage: ./setup [-d] <list of last byte of the IPs>";
