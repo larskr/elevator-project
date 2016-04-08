@@ -7,7 +7,6 @@ import (
 	"elevator-project/elev"
 )
 
-
 // stateFn represents the state of the elevator as a function that
 // returns the next state.
 type stateFn func(*Elevator) stateFn
@@ -53,10 +52,10 @@ func (e *Elevator) Requests() []Request {
 		if e.requests[floor][indexOfDir(elev.Up)] {
 			reqs = append(reqs, Request{floor, elev.Up})
 		} else if e.requests[floor][indexOfDir(elev.Down)] {
-			reqs = append(reqs, Request{floor, elev.Down})			
+			reqs = append(reqs, Request{floor, elev.Down})
 		}
 	}
-	return reqs		
+	return reqs
 }
 
 func (e *Elevator) SimulateCost(req Request) float64 {
@@ -88,6 +87,7 @@ func start(e *Elevator) stateFn {
 		return moving
 	}
 	e.floor = elev.ReadFloorSensor()
+	elev.SetFloorIndicator(e.floor)
 	return idle
 }
 
@@ -122,10 +122,10 @@ func atFloor(e *Elevator) stateFn {
 	// Is there a request at this floor in the direction we're going?
 	if e.requests[e.floor][indexOfDir(e.direction)] {
 		elev.SetMotorDirection(elev.Stop)
-		
+
 		e.clearRequest(e.floor, elev.Up)
 		e.clearRequest(e.floor, elev.Down)
-		
+
 		return doorsOpen
 	}
 
@@ -192,6 +192,12 @@ func gotoFloor(e *Elevator) stateFn {
 		return gotoFloor
 	}
 
+	// Check for request in diection of motion.
+	if e.hasWork() {
+		elev.SetMotorDirection(e.direction)
+		return moving
+	}
+
 	// If we get to this point, there are no more destinations.
 	elev.SetMotorDirection(elev.Stop)
 	e.direction = elev.Stop
@@ -229,11 +235,11 @@ func idle(e *Elevator) stateFn {
 // Checks if there are more requests in the current direction of motion.
 func (e *Elevator) hasWork() bool {
 	for floor := 0; floor < elev.NumFloors; floor++ {
-		if e.requests[floor][indexOfDir(e.direction)] &&
-			((e.direction == elev.Up && floor > e.floor) ||
-			(e.direction == elev.Down && floor < e.floor)) {
+		if e.requests[floor][indexOfDir(elev.Up)] || e.requests[floor][indexOfDir(elev.Down)] {
+			if (e.direction == elev.Up && floor > e.floor) ||
+				(e.direction == elev.Down && floor < e.floor) {
 				return true
-			
+			}
 		}
 	}
 	return false

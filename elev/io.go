@@ -9,7 +9,6 @@ import "C"
 
 func InitIO() int {
 	return int(C.io_init())
-	return 0
 }
 
 func SetBit(channel int) {
@@ -26,10 +25,8 @@ func WriteAnalog(channel int, value int) {
 
 func ReadBit(channel int) int {
 	return int(C.io_read_bit(C.int(channel)))
-	return 0
 }
 
 func ReadAnalog(channel int) int {
 	return int(C.io_read_analog(C.int(channel)))
-	return 0
 }

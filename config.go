@@ -2,11 +2,12 @@ package main
 
 import (
 	"bufio"
-	"strconv"
-	"os"
+	"fmt"
 	"io"
+	"os"
+	"strconv"
 	"strings"
-	
+
 	"elevator-project/elev"
 	"elevator-project/network"
 )

@@ -3,8 +3,10 @@ package main
 import (
 	"encoding"
 	"encoding/binary"
+	"math"
 	"time"
 
+	"elevator-project/elev"
 	"elevator-project/network"
 )
 
@@ -119,6 +121,7 @@ func (d *assignData) UnmarshalBinary(p []byte) error {
 	if binary.BigEndian.Uint32(p[24:]) == 1 {
 		d.taken = true
 	}
+	return nil
 }
 
 func (d *backupData) MarshalBinary() ([]byte, error) {
@@ -127,39 +130,39 @@ func (d *backupData) MarshalBinary() ([]byte, error) {
 	copy(p, d.elevator[:])
 	p = p[16:]
 	timebuf, _ := d.created.MarshalBinary()
-	nc = len(timebuf)
-	binary.BigEndian.PutUint8(p, uint8(nc))
-	copy(p[16:], timebuf)
+	nc := len(timebuf)
+	p[0] = uint8(nc)
+	copy(p[1:], timebuf)
 	p = p[nc+1:]
 	nreq := len(d.requests)
-	binary.BigEndian.PutUint8(p, uint8(nreq))
+	p[0] = uint8(nreq)
 	p = p[1:]
 	for i := 0; i < nreq; i++ {
-		binary.BigEndian.PutUint8(p, uint8(d.requests[i].Floor))
+		p[0] = uint8(d.requests[i].Floor)
 		if d.requests[i].Direction == elev.Down {
-			binary.BigEndian.PutUint8(p[1:], uint8(255))
+			p[1] = uint8(255)
 		} else {
-			binary.BigEndian.PutUint8(p[1:], uint8(d.requests[i].Direction))
+			p[1] = uint8(d.requests[i].Direction)
 		}
 		p = p[2:]
 	}
-	n = 16 + 1 + nc + 1 + nreq*2
+	n := 16 + 1 + nc + 1 + nreq*2
 	return buf[:n], nil
 }
 
 func (d *backupData) UnmarshalBinary(p []byte) error {
 	copy(d.elevator[:], p)
 	p = p[16:]
-	ntime = int(binary.BigEndian.Uint8(p))
+	ntime := int(p[0])
 	p = p[1:]
 	d.created.UnmarshalBinary(p[:ntime])
 	p = p[ntime:]
-	nreq = int(binary.BigEndian.Uint8(p))
+	nreq := int(p[0])
 	p = p[1:]
 	d.requests = make([]Request, nreq)
 	for i := 0; i < nreq; i++ {
-		d.requests[i].Floor = int(binary.BigEndian.Uint8(p))
-		dir := binary.BigEndian.Uint8(p[1:])
+		d.requests[i].Floor = int(p[0])
+		dir := p[1]
 		if dir == 255 {
 			d.requests[i].Direction = elev.Down
 		} else {
