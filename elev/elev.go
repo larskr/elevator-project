@@ -19,16 +19,6 @@ const (
 	Up   Direction = 1
 )
 
-// For debugging.
-func (dir Direction) String() (str string) {
-	switch dir {
-	case Up: str = "UP"
-	case Down: str = "DOWN"
-	case Stop: str = "STOP"
-	}
-	return
-}
-
 type Button int
 
 const (
@@ -90,7 +80,7 @@ func Init() error {
 	}
 
 	ret := InitIO()
-	if ret != 0 {
+	if ret == 0 {
 		return errors.New("Unable to initalize elevator hardware.")
 	}
 
