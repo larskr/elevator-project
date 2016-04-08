@@ -61,6 +61,7 @@ type backupData struct {
 	elevator network.Addr
 	created  time.Time
 	requests []Request
+	dest     [elev.NumFloors]bool
 }
 
 func (d *panelData) MarshalBinary() ([]byte, error) {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"math/rand"
 	"time"
 
 	"elevator-project/elev"
@@ -19,9 +18,7 @@ type Elevator struct {
 
 	panel *Panel
 
-	// This map is used as a set that holds the floor numbers which
-	// has been pressed on command panel inside the elevator.
-	dest map[int]bool
+	dest [elev.NumFloors]bool
 
 	// Pending requests.
 	requests [elev.NumFloors][2]bool
@@ -32,7 +29,6 @@ func NewElevator(p *Panel) *Elevator {
 	e := &Elevator{
 		panel:     p,
 		direction: elev.Stop,
-		dest:      make(map[int]bool),
 		queue:     make(chan Request, maxRequests),
 	}
 	return e
@@ -44,22 +40,6 @@ func (e *Elevator) Start() {
 
 func (e *Elevator) AddRequest(req Request) {
 	e.queue <- req
-}
-
-func (e *Elevator) Requests() []Request {
-	reqs := make([]Request, 0, maxRequests)
-	for floor := 0; floor < elev.NumFloors; floor++ {
-		if e.requests[floor][indexOfDir(elev.Up)] {
-			reqs = append(reqs, Request{floor, elev.Up})
-		} else if e.requests[floor][indexOfDir(elev.Down)] {
-			reqs = append(reqs, Request{floor, elev.Down})
-		}
-	}
-	return reqs
-}
-
-func (e *Elevator) SimulateCost(req Request) float64 {
-	return rand.Float64()
 }
 
 func (e *Elevator) run() {
@@ -105,7 +85,7 @@ func atFloor(e *Elevator) stateFn {
 	// Is this floor a destination?
 	if e.dest[e.floor] {
 		elev.SetMotorDirection(elev.Stop)
-		delete(e.dest, e.floor)
+		e.dest[e.floor] = false
 
 		// Update lamps on internal elevator panel.
 		e.panel.SetLamp(elev.Command, e.floor, false)
@@ -130,7 +110,7 @@ func atFloor(e *Elevator) stateFn {
 	}
 
 	// No more destinations, and no more requests in the direction we are going.
-	if len(e.dest) == 0 && !e.hasWork() {
+	if !e.hasDest() && !e.hasWork() {
 		elev.SetMotorDirection(elev.Stop)
 		e.direction = elev.Stop
 		return idle
@@ -171,13 +151,13 @@ func doorsOpen(e *Elevator) stateFn {
 func gotoFloor(e *Elevator) stateFn {
 	// Assumption: motor is stopped when entering this function, but
 	// e.direction holds the previous direction of motion.
-	if len(e.dest) > 0 {
-		for d := range e.dest {
+	if e.hasDest() {
+		for f := range e.dest {
 			// Are there more destinations in the direction of motion?
-			if d > e.floor && e.direction == elev.Up {
+			if e.dest[f] && f > e.floor && e.direction == elev.Up {
 				elev.SetMotorDirection(elev.Up)
 				return moving
-			} else if d < e.floor && e.direction == elev.Down {
+			} else if e.dest[f] && f < e.floor && e.direction == elev.Down {
 				elev.SetMotorDirection(elev.Down)
 				return moving
 			}
@@ -245,6 +225,16 @@ func (e *Elevator) hasWork() bool {
 	return false
 }
 
+// Checks if there are more requests in the current direction of motion.
+func (e *Elevator) hasDest() bool {
+	for floor := 0; floor < elev.NumFloors; floor++ {
+		if e.dest[floor] {
+			return true
+		}
+	}
+	return false
+}
+
 // Clear requests and resets panel lamp.
 func (e *Elevator) clearRequest(floor int, dir elev.Direction) {
 	if (floor == 0 && dir == elev.Down) || (floor == elev.NumFloors-1 && dir == elev.Up) {
@@ -253,163 +243,3 @@ func (e *Elevator) clearRequest(floor int, dir elev.Direction) {
 	e.requests[floor][indexOfDir(dir)] = false
 	e.panel.SetLamp(btnFromDir(dir), floor, false)
 }
-
-
-
-/////// COST PART //////////
-
-type stateFn func(*Simulator) simStateFn
-
-// Elevator holds the state of the elevator.
-type Simulator struct {
-	state       simStateFn
-	floor       int
-	direction   elev.Direction
-	cost	    float64
-	dest map[int]bool
-
-	// Pending requests.
-	virtualReq Request
-	requests [elev.NumFloors][2]bool
-}
-
-func NewElevatorCost() *Simulator {
-	e := &Simulator{
-		direction:  elev.Stop,
-		cost:	    0,
-		dest:       make(map[int]bool),
-	}
-	return e
-}
-
-func (e *Simulator) AddCost(req Request) {
-	e.requests[req.Floor][indexOfDir(req.Direction)] = true
-}
-
-func (e *Elevator) SimulateCost(req Request) float64 {
-	//create virtual elevator used for simulating cost
-	ve = NewElevator()
-	//copy data from real elevator
-	ve.direction 	= e.direction
-	ve.dest 	= e.dest
-	ve.state 	= e.state
-	ve.floor 	= e.floor
-	ve.Add(Request)
-	ve.virtualReq = Request
-	for ve.state != nil {
-		ve.state = ve.state(ve);
-	}
-	return ve.cost
-}
-
-func movingCost(e *Simulator) simStateFn {
-
-	if elev.ReadFloorSensor == -1 {
-		e.floor = e.floor + sign(e.direction)
-		cost = cost + 3
-		return atFloorCost
-	}
-
-	e.floor = elev.ReadFloorSensor()
-	return atFloorCost
-}
-
-func atFloorCost(e *Simulator) simStateFn {
-	
-	if e.dest[e.floor] {
-		delete(e.dest, e.floor)
-
-		if e.floor == e.virtualReq.floor {
-			return nil
-		}
-		e.clearRequest(e.floor, elev.Up)
-		e.clearRequest(e.floor, elev.Down)
-
-		return doorsOpenCost
-	}
-	
-	if e.requests[e.floor][indexOfDir(e.direction)] {
-
-		if e.floor == e.virtualReq.floor && e.direction == e.virtualDest.direction {
-			return nil
-		}
-		e.clearRequest(e.floor, elev.Up)
-		e.clearRequest(e.floor, elev.Down)
-		
-		return doorsOpenCost
-	}
-	
-	return movingCost
-}
-
-func doorsOpenCost(e *Simulator) simStateFn {
-
-	cost = cost + 4
-	return gotoFloorCost;
-}
-
-func gotoFloorCost(e *Simulator) simStateFn {
-
-	if len(e.dest) > 0 {
-		for d := range e.dest {
-
-			if d > e.floor && e.direction == elev.Up {
-				return movingCost
-			} else if d < e.floor && e.direction == elev.Down {
-				return movingCost
-			}
-		}
-
-		if e.direction == elev.Up {
-			e.direction = elev.Down
-		} else if e.direction == elev.Down {
-			e.direction = elev.Up
-		}
-		return gotoFloorCost
-	}
-	
-	if e.hasWork() {
-		return movingCost
-	}
-	return idleCost
-}
-
-func idleCost(e *Simulator) simStateFn {
-	for floor := 0; floor < elev.NumFloors; floor++ {
-		if e.requests[floor][indexOfDir(elev.Up)] || e.requests[floor][indexOfDir(elev.Down)] {
-			if floor == e.floor{
-				return = nil
-			} else if floor > e.floor {
-				e.direction = elev.Up
-			} else {
-				e.direction = elev.Down
-			}
-			
-			e.dest[floor] = true
-			return gotoFloorCost
-		}
-	}
-	return idleCost
-}
-
-func (e *Simulator) hasWorkCost() bool {
-	for floor := 0; floor < elev.NumFloors; floor++ {
-		if e.requests[floor][indexOfDir(elev.Up)] || e.requests[floor][indexOfDir(elev.Down)] {
-			if (e.direction == elev.Up && floor > e.floor) ||
-				(e.direction == elev.Down && floor < e.floor) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func (e *Simulator) clearRequestCost(floor int, dir elev.Direction) {
-	if (floor == 0 && dir == elev.Down) || (floor == elev.NumFloors-1 && dir == elev.Up) {
-		return // invalid request
-	}
-	e.requests[floor][indexOfDir(dir)] = false
-}
-
-
-
