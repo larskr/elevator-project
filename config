@@ -7,3 +7,7 @@ simulator_ip = 127.0.0.1
 [network]
 interface = eth0
 protocol = udp4
+
+[watchdog]
+elevator_socket = /var/tmp/elevator_socket
+watchdog_socket = /var/tmp/watchdog_socket

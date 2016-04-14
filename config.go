@@ -15,6 +15,8 @@ import (
 type config struct {
 	elevator elev.Config
 	network  network.Config
+	elevatorSocket string
+	watchdogSocket string
 }
 
 func loadConfig(filename string) (*config, error) {
@@ -74,6 +76,10 @@ func loadConfig(filename string) (*config, error) {
 			c.network.Interface = valstr
 		case "network.protocol":
 			c.network.Protocol = valstr
+		case "watchdog.elevator_socket":
+			c.elevatorSocket = valstr
+		case "watchdog.watchdog_socket":
+			c.watchdogSocket = valstr
 		}
 	}
 

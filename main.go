@@ -1,9 +1,13 @@
+
 package main
 
 import (
 	"fmt"
 	"os"
 	"time"
+	"net"
+	"syscall"
+	"os/exec"
 	//"os/signal"
 
 	"elevator-project/elev"
@@ -13,33 +17,26 @@ import (
 type ServiceMode int
 
 const (
-	Online ServiceMode = 0x1
-	Local  ServiceMode = 0x2
-	Broken ServiceMode = 0x3
+	Online        ServiceMode = 0x1
+	Local         ServiceMode = 0x2
+	Broken        ServiceMode = 0x3
+	Watchdog      ServiceMode = 0x4
 )
 
 type BackupHandler struct {
 	backups map[network.Addr]*backupData
-	this    network.Addr
+	addr    network.Addr
+	synced  bool
 }
 
 func (b *BackupHandler) create(e *Elevator) *backupData {
 	var bd = &backupData{
-		elevator: b.this,
+		elevator: b.addr,
 		created:  time.Now(),
-		requests: make([]Request, 0, maxRequests),
+		requests: e.requests,
 		dest:     e.dest,
 	}
-
-	for floor := 0; floor < elev.NumFloors; floor++ {
-		if e.requests[floor][indexOfDir(elev.Up)] {
-			bd.requests = append(bd.requests, Request{floor, elev.Up})
-		} else if e.requests[floor][indexOfDir(elev.Down)] {
-			bd.requests = append(bd.requests, Request{floor, elev.Down})
-		}
-	}
-
-	b.backups[b.this] = bd
+	b.backups[b.addr] = bd
 	return bd
 }
 
@@ -48,14 +45,8 @@ func (b *BackupHandler) update(bd *backupData) {
 }
 
 func (b *BackupHandler) changed(e *Elevator) bool {
-	backup := b.backups[b.this]
-
-	var reqs [elev.NumFloors][2]bool
-	for _, req := range backup.requests {
-		reqs[req.Floor][indexOfDir(req.Direction)] = true
-	}
-
-	return !(e.requests == reqs && e.dest == backup.dest)
+	backup := b.backups[b.addr]
+	return !(e.requests == backup.requests && e.dest == backup.dest)
 }
 
 func main() {
@@ -67,6 +58,59 @@ func main() {
 	elev.LoadConfig(&conf.elevator)
 	network.LoadConfig(&conf.network)
 
+	var mode ServiceMode = Watchdog
+
+	wdaddr, err := net.ResolveUnixAddr("unixgram", conf.watchdogSocket)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	os.Remove(conf.watchdogSocket)
+	wdconn, err := net.ListenUnixgram("unixgram", wdaddr)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	for mode == Watchdog {
+		wdconn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		rbuf := make([]byte, 256)
+		_, _, err = wdconn.ReadFromUnix(rbuf)
+		if err != nil {
+			wdconn.Close()
+			//fmt.Println("Watchdog timed out.")
+			mode = Local
+		}
+	}
+
+	elevaddr, err := net.ResolveUnixAddr("unixgram", conf.elevatorSocket)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	
+	os.Remove(conf.elevatorSocket)
+	elevconn, err := net.ListenUnixgram("unixgram", elevaddr)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	cmd := exec.Command(os.Args[0])
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Start()
+
+	fmt.Printf("Elevator PID: %v\n", cmd.Process.Pid)
+	
+	for {
+		elevconn.WriteToUnix([]byte("Alive"), wdaddr)
+		fmt.Println("Sent alive to watchdog.")
+		time.Sleep(1 * time.Second)
+	}
+	
+	os.Exit(1)
+	
 	err = elev.Init()
 	if err != nil {
 		fmt.Println(err)
@@ -87,25 +131,20 @@ func main() {
 	go receiveMsgs(node, msgsFromOther)
 	go receiveMyMsgs(node, msgsFromThis)
 
-	var backup = &BackupHandler{make(map[network.Addr]*backupData), node.Addr()}
+	var backup = &BackupHandler{make(map[network.Addr]*backupData), node.Addr(), false}
 	backup.create(elevator)
 
-	var mode ServiceMode = Local
+	mode = Local
 	reqch := panel.Requests
 
 	for {
-		if node.IsConnected() {
-			mode = Online
-		} else {
-			mode = Local
-		}
-
 		if mode == Online {
 
-			// if backup.changed(elevator) {
-			// 	bd := backup.create(elevator)
-			// 	sendData(node, BACKUP, bd)
-			// }
+			if backup.synced && backup.changed(elevator) {
+				bd := backup.create(elevator)
+				backup.synced = false
+				sendData(node, BACKUP, bd)
+			}
 
 			select {
 			case req := <-reqch:
@@ -159,10 +198,11 @@ func main() {
 
 					fmt.Printf("ASSIGN message received and forwarded\n")
 
-					// case BACKUP:
-					// 	bd := &backupData{}
-					// 	unpackData(msg.Data, bd)
-					// 	backup.update(bd)
+				case BACKUP:
+					bd := &backupData{}
+					unpackData(msg.Data, bd)
+					backup.update(bd)
+
 				}
 				node.ForwardMessage(msg)
 
@@ -176,6 +216,7 @@ func main() {
 						req:      cd.req,
 					})
 					fmt.Printf("COST message received from myself\n")
+
 				case ASSIGN:
 					var ad assignData
 					unpackData(msg.Data, &ad)
@@ -185,7 +226,12 @@ func main() {
 						elevator.AddRequest(ad.req)
 						fmt.Printf("Took my own ASSIGN message\n")
 					}
+
+				case BACKUP:
+					backup.synced = true
+
 				}
+
 			default:
 			}
 
@@ -198,108 +244,15 @@ func main() {
 			}
 
 		} else if mode == Broken {
+		} else if mode == Watchdog {
+			
 		}
 
 	}
 
-	// var bd1 = backupData{
-	// 	elevator: node.Addr(),
-	// 	created:  time.Now(),
-	// 	requests: []Request{Request{1, elev.Down}},
-	// }
-	// fmt.Println(bd1.created)
-
-	// buf, _ := bd1.MarshalBinary()
-	// fmt.Println(buf)
-
-	// var bd2 backupData
-	// bd2.UnmarshalBinary(buf)
-	// fmt.Println(bd2)
-	// fmt.Println(bd2.created)
-
-	// msgsFromOther := make(chan *network.Message)
-	// msgsFromThis := make(chan *network.Message)
-	// go receiveMsgs(node, msgsFromOther)
-	// go receiveMyMsgs(node, msgsFromThis)
-
 	// Stop the elevator with Ctrl+C.
 	//interruptc := make(chan os.Signal)
 	//signal.Notify(interruptc, os.Interrupt)
-
-	//reqch := panel.Requests
-
-	//for {
-	//if mode == online {
-
-	//	select {
-	//	case req := <-reqch:
-	//		fmt.Printf("Request: floor %v, direction %v\n", req.Floor, req.Direction)
-	//		elevator.AddRequest(req)
-	//		fmt.Println(elevator.hasWork())
-	// if node.IsConnected() {
-	// 	sendData(node, PANEL, &panelData{
-	// 		floor:  req.Floor,
-	// 		button: btnFromDir(req.Direction),
-	// 		on:     true,
-	// 	})
-	// 	sendData(node, COST, &costData{
-	// 		elevator: node.Addr(),
-	// 		req: req,
-	// 		cost: 1.0,
-	// 	})
-	// 	fmt.Println("Panel data sent.")
-	// }
-	//	case <-interruptc:
-	//		elev.SetMotorDirection(elev.Stop)
-	//		os.Exit(1)
-	// case msg := <-msgsFromOther:
-	// 	switch msg.Type {
-	// 	case PANEL:
-	// 		var pd panelData
-	// 		unpackData(msg.Data, &pd)
-	// 		panel.SetLamp(pd.button, pd.floor, pd.on)
-	// 		fmt.Println("Panel data received.")
-	// 	case COST:
-	// 		var cd costData
-	// 		unpackData(msg.Data, &cd)
-	// 		cost := elevator.SimulateCost(cd.req)
-	// 		if cost < cd.cost {
-	// 			cd.elevator = node.Addr()
-	// 			cd.cost = cost
-	// 		}
-	// 		packData(msg.Data, &cd)
-	// 		fmt.Println("Cost message forwarded.")
-	// 	case ASSIGN:
-	// 		var ad assignData
-	// 		unpackData(msg.Data, &ad)
-	// 		if ad.elevator == node.Addr() {
-	// 			elevator.Add(ad.req)
-	// 			ad.taken = true
-	// 		}
-	// 		packData(msg.Data, &ad)
-	// 	}
-	// 	node.ForwardMessage(msg)
-	// case msg := <-msgsFromThis:
-	// 	switch msg.Type {
-	// 	case COST:
-	// 		var cd costData
-	// 		unpackData(msg.Data, &cd)
-	// 		fmt.Printf("Lowest cost %v for %v\n", cd.cost, net.IP(cd.elevator[:]))
-	// 		sendData(node, ASSIGN, &assignData{
-	// 			elevator: cd.elevator,
-	// 			req: cd.req,
-	// 		})
-	// 	case ASSIGN:
-	// 		var ad assignData
-	// 		unpackData(msg.Data, &ad)
-	// 		fmt.Printf("Got assign message back with taken = %v\n", ad.taken)
-	// 	}
-	//	}
-
-	//} else if mode == local {
-
-	//}
-	//}
 
 	os.Exit(0)
 }

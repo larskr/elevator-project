@@ -22,12 +22,8 @@ func unpackData(p []byte, data encoding.BinaryUnmarshaler) {
 // sendData sends a message with the data and returns the message ID.
 // The data struct to be sent must be implmented in packData/unpackData.
 func sendData(node *network.Node, mtype network.MsgType, data encoding.BinaryMarshaler) uint32 {
-	var buf [network.MaxDataLength]byte
-
-	databuf, _ := data.MarshalBinary()
-	n := copy(buf[:], databuf)
-	msg := network.NewMessage(mtype, buf[:n])
-
+	buf, _ := data.MarshalBinary()
+	msg := network.NewMessage(mtype, buf)
 	node.SendMessage(msg)
 	return msg.ID
 }
@@ -60,7 +56,7 @@ type assignData struct {
 type backupData struct {
 	elevator network.Addr
 	created  time.Time
-	requests []Request
+	requests [elev.NumFloors][2]bool
 	dest     [elev.NumFloors]bool
 }
 
@@ -126,49 +122,45 @@ func (d *assignData) UnmarshalBinary(p []byte) error {
 }
 
 func (d *backupData) MarshalBinary() ([]byte, error) {
-	buf := make([]byte, 40+2*maxRequests)
+	buf := make([]byte, 32+3*elev.NumFloors)
 	p := buf
+
 	copy(p, d.elevator[:])
 	p = p[16:]
+
 	timebuf, _ := d.created.MarshalBinary()
-	nc := len(timebuf)
-	p[0] = uint8(nc)
-	copy(p[1:], timebuf)
-	p = p[nc+1:]
-	nreq := len(d.requests)
-	p[0] = uint8(nreq)
-	p = p[1:]
-	for i := 0; i < nreq; i++ {
-		p[0] = uint8(d.requests[i].Floor)
-		if d.requests[i].Direction == elev.Down {
-			p[1] = uint8(255)
-		} else {
-			p[1] = uint8(d.requests[i].Direction)
+	copy(p[:15], timebuf)
+	p = p[16:]
+
+	for f := 0; f < elev.NumFloors; f++ {
+		if d.requests[f][0] {
+			p[0] = 1
 		}
-		p = p[2:]
+		if d.requests[f][1] {
+			p[1] = 1
+		}
+		if d.dest[f] {
+			p[2] = 1
+		}
+		p = p[3:]
 	}
-	n := 16 + 1 + nc + 1 + nreq*2
-	return buf[:n], nil
+
+	return buf, nil
 }
 
 func (d *backupData) UnmarshalBinary(p []byte) error {
 	copy(d.elevator[:], p)
 	p = p[16:]
-	ntime := int(p[0])
-	p = p[1:]
-	d.created.UnmarshalBinary(p[:ntime])
-	p = p[ntime:]
-	nreq := int(p[0])
-	p = p[1:]
-	d.requests = make([]Request, nreq)
-	for i := 0; i < nreq; i++ {
-		d.requests[i].Floor = int(p[0])
-		dir := p[1]
-		if dir == 255 {
-			d.requests[i].Direction = elev.Down
-		} else {
-			d.requests[i].Direction = elev.Direction(dir)
-		}
+
+	d.created.UnmarshalBinary(p[:15])
+	p = p[16:]
+
+	for f := 0; f < elev.NumFloors; f++ {
+		d.requests[f][0] = (p[0] == 1)
+		d.requests[f][1] = (p[1] == 1)
+		d.dest[f] = (p[2] == 1)
+		p = p[3:]
 	}
+
 	return nil
 }
