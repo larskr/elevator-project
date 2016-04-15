@@ -3,7 +3,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -12,9 +14,19 @@ import (
 	"time"
 
 	"elevator-project/pkg/config"
+	"elevator-project/pkg/elev"
 )
 
+var infolog *log.Logger
+var errorlog *log.Logger
+
+func init() {
+	infolog = log.New(os.Stdout, "\x1b[35mWATCHDOG\x1b[m: ", 0)
+	errorlog = log.New(os.Stdout, "\x1b[31mERROR\x1b[m: ", 0)
+}
+
 func main() {
+
 	conf, err := config.LoadFile("./config")
 	if err != nil {
 		fmt.Println(err)
@@ -30,9 +42,10 @@ func main() {
 	}
 
 	var wd = &Watchdog{
-		conn: conn,
-		elevator: &net.UnixAddr{conf["watchdog.elev_socket"], "unixgram"},
-		shutdown: make(chan chan struct{}),
+		conn:           conn,
+		elevator:       &net.UnixAddr{conf["watchdog.elev_socket"], "unixgram"},
+		backupfilepath: conf["watchdog.backupfile"],
+		shutdown:       make(chan chan struct{}),
 	}
 	wd.proto = exec.Command("./bin/elevator")
 	wd.proto.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -41,8 +54,8 @@ func main() {
 
 	go wd.Run()
 
-	interrupted := make(chan os.Signal)
-	quit := make(chan os.Signal)
+	interrupted := make(chan os.Signal, 1)
+	quit := make(chan os.Signal, 1)
 	signal.Notify(interrupted, syscall.SIGINT)
 	signal.Notify(quit, syscall.SIGQUIT)
 
@@ -52,28 +65,32 @@ func main() {
 			if wd.cmd.Process != nil {
 				wd.cmd.Process.Signal(syscall.SIGINT)
 				wd.cmd.Wait()
-				fmt.Printf("\nWATCHDOG: sent SIGINT to elevator process pid %v\n",
+				infolog.Printf("sent SIGINT to elevator process pid %v\n",
 					wd.cmd.Process.Pid)
 			}
 		case <-quit:
-			fmt.Printf("\nWATCHDOG: shutting down.\n")
+			infolog.Printf("shutting down.\n")
 			waitc := make(chan struct{})
 			wd.shutdown <- waitc
 			<-waitc
 			os.Exit(0)
 		}
-	}	
+	}
 }
 
 const (
-	aliveTime = 3 * time.Second
+	aliveTime  = 250 * time.Millisecond
+	backupSize = 34 + 3*elev.NumFloors
 )
 
 type Watchdog struct {
 	conn   *net.UnixConn
 	proto  *exec.Cmd
 	cmd    *exec.Cmd
-	backup [256]byte
+	backup [backupSize]byte
+
+	backupfile     *os.File
+	backupfilepath string
 
 	elevator *net.UnixAddr
 
@@ -86,26 +103,59 @@ func (wd *Watchdog) Restart() {
 	*wd.cmd = *wd.proto
 	wd.cmd.Start()
 
-	fmt.Printf("WATCHDOG: elevator process pid is %v\n", wd.cmd.Process.Pid)
+	infolog.Printf("elevator process pid is %v\n", wd.cmd.Process.Pid)
 
-	
-
+	// Wait for ready message.
 	var buf [16]byte
 	wd.conn.SetReadDeadline(time.Time{})
 	_, _, err := wd.conn.ReadFromUnix(buf[:])
 	if err != nil {
 		fmt.Println(err)
 	}
-	
+
+	// Send backup to elevator.
 	_, err = wd.conn.WriteToUnix(wd.backup[:], wd.elevator)
 	if err != nil {
 		fmt.Println(err)
 	}
 }
 
-func (wd *Watchdog) Run() {
+func (wd *Watchdog) Flush() error {
+	wd.backupfile.Seek(0, os.SEEK_SET)
+
+	_, err := wd.backupfile.Write(wd.backup[:])
+	if err != nil {
+		return nil
+	}
+
+	wd.backupfile.Sync()
+
+	return nil
+}
+
+func (wd *Watchdog) Run() error {
+	fd, err := os.OpenFile(wd.backupfilepath, os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		return err
+	}
+	wd.backupfile = fd
+
+	fi, err := fd.Stat()
+	if err != nil {
+		return err
+	}
+
+	if fi.Size() != 0 {
+		n, err := fd.Read(wd.backup[:])
+		if err != nil && n != backupSize {
+			fmt.Println(err)
+			return err
+		}
+	}
+
 	wd.Restart()
 
+	var buf [backupSize]byte
 	for {
 		select {
 		case c := <-wd.shutdown:
@@ -115,19 +165,25 @@ func (wd *Watchdog) Run() {
 			}
 			wd.conn.Close()
 			c <- struct{}{}
-			return
+			return nil
 		default:
 			wd.conn.SetReadDeadline(time.Now().Add(aliveTime))
-			
-			_, _, err := wd.conn.ReadFromUnix(wd.backup[:])
+
+			_, _, err := wd.conn.ReadFromUnix(buf[:])
 			if err != nil {
 				if wd.cmd.Process != nil {
 					wd.cmd.Process.Signal(syscall.SIGINT)
 					wd.cmd.Wait()
 				}
-				fmt.Printf("WATCHDOG: elevator process has crashed\n")
-			
+				infolog.Printf("elevator process has crashed\n")
+
 				wd.Restart()
+				continue
+			}
+
+			if !bytes.Equal(wd.backup[32:], buf[32:]) {
+				wd.backup = buf
+				wd.Flush()
 			}
 		}
 	}

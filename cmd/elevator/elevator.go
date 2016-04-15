@@ -6,6 +6,8 @@ import (
 	"elevator-project/pkg/elev"
 )
 
+const maxSimulationSteps = 64
+
 // stateFn represents the state of the elevator as a function that
 // returns the next state.
 type stateFn func(*Elevator) stateFn
@@ -18,42 +20,77 @@ type Elevator struct {
 
 	panel *Panel
 
-	dest [elev.NumFloors]bool
+	dest       [elev.NumFloors]bool
+	destBuffer [elev.NumFloors]bool
 
-	// Pending requests.
-	requests [elev.NumFloors][2]bool
-	queue    chan Request
+	requests       [elev.NumFloors][2]bool
+	requestsBuffer [elev.NumFloors][2]bool
+
+	// simulator
+	simulate   bool
+	cost       float64
+	virtualreq Request
 }
 
 func NewElevator(p *Panel) *Elevator {
 	e := &Elevator{
 		panel:     p,
 		direction: elev.Stop,
-		queue:     make(chan Request, maxRequests),
 	}
 	return e
 }
 
+// Initializes elevator from backup. LoadBackup may be called with a
+// empty backupData struct.
+func (e *Elevator) LoadBackup(bd *backupData) {
+	e.floor = bd.floor
+	e.direction = bd.direction
+	e.dest = bd.dest
+	e.destBuffer = bd.dest
+	//e.requests = bd.requests
+	//e.requestsBuffer = bd.requests
+}
+
+func (e *Elevator) SimulateCost(req Request) float64 {
+	//create virtual elevator used for simulating cost
+	var ve *Elevator = new(Elevator)
+	*ve = *e
+
+	ve.simulate = true
+	ve.requests[req.floor][indexOfDir(req.direction)] = true
+	ve.virtualreq = req
+
+	for i := 0; ve.state != nil && i < maxSimulationSteps; i++ {
+		ve.state = ve.state(ve)
+	}
+	return ve.cost
+}
+
 func (e *Elevator) Start() {
 	go e.run()
+	go e.readPanel()
 }
 
 func (e *Elevator) AddRequest(req Request) {
-	e.queue <- req
+	if req.isValid() {
+		e.requestsBuffer[req.floor][indexOfDir(req.direction)] = true
+	} else {
+		errorlog.Println("Invalid request")
+	}
+}
+
+func (e *Elevator) readPanel() {
+	for {
+		floor := <-e.panel.Commands
+		e.destBuffer[floor] = true
+	}
 }
 
 func (e *Elevator) run() {
 	for e.state = start; e.state != nil; {
 
-	empty: // empty request queue
-		for {
-			select {
-			case req := <-e.queue:
-				e.requests[req.Floor][indexOfDir(req.Direction)] = true
-			default:
-				break empty
-			}
-		}
+		e.requests = e.requestsBuffer
+		e.dest = e.destBuffer
 
 		// advance to next state
 		e.state = e.state(e)
@@ -62,8 +99,12 @@ func (e *Elevator) run() {
 
 func start(e *Elevator) stateFn {
 	if f := elev.ReadFloorSensor(); f == -1 {
-		elev.SetMotorDirection(elev.Down)
-		e.direction = elev.Down
+		if e.direction == elev.Stop {
+			elev.SetMotorDirection(elev.Down)
+			e.direction = elev.Down
+		} else {
+			elev.SetMotorDirection(e.direction)
+		}
 		return moving
 	}
 	e.floor = elev.ReadFloorSensor()
@@ -72,6 +113,12 @@ func start(e *Elevator) stateFn {
 }
 
 func moving(e *Elevator) stateFn {
+	if e.simulate {
+		e.floor = e.floor + int(e.direction)
+		e.cost += 3
+		return atFloor
+	}
+
 	for elev.ReadFloorSensor() == -1 {
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -80,15 +127,26 @@ func moving(e *Elevator) stateFn {
 }
 
 func atFloor(e *Elevator) stateFn {
-	elev.SetFloorIndicator(e.floor)
+	if !e.simulate {
+		elev.SetFloorIndicator(e.floor)
+	}
 
 	// Is this floor a destination?
 	if e.dest[e.floor] {
-		elev.SetMotorDirection(elev.Stop)
+		if !e.simulate {
+			elev.SetMotorDirection(elev.Stop)
+		}
 		e.dest[e.floor] = false
+		e.destBuffer[e.floor] = false
+
+		if e.simulate && e.floor == e.virtualreq.floor {
+			return nil
+		}
 
 		// Update lamps on internal elevator panel.
-		e.panel.SetLamp(elev.Command, e.floor, false)
+		if !e.simulate {
+			e.panel.SetLamp(elev.Command, e.floor, false)
+		}
 
 		// We clear all requests (up and down) if we stop. This assumes
 		// passengers will accept travelling in the wrong direction for a
@@ -101,7 +159,13 @@ func atFloor(e *Elevator) stateFn {
 
 	// Is there a request at this floor in the direction we're going?
 	if e.requests[e.floor][indexOfDir(e.direction)] {
-		elev.SetMotorDirection(elev.Stop)
+		if !e.simulate {
+			elev.SetMotorDirection(elev.Stop)
+		}
+
+		if e.simulate && e.floor == e.virtualreq.floor {
+			return nil
+		}
 
 		e.clearRequest(e.floor, elev.Up)
 		e.clearRequest(e.floor, elev.Down)
@@ -111,7 +175,9 @@ func atFloor(e *Elevator) stateFn {
 
 	// No more destinations, and no more requests in the direction we are going.
 	if !e.hasDest() && !e.hasWork() {
-		elev.SetMotorDirection(elev.Stop)
+		if !e.simulate {
+			elev.SetMotorDirection(elev.Stop)
+		}
 		e.direction = elev.Stop
 		return idle
 	}
@@ -119,33 +185,42 @@ func atFloor(e *Elevator) stateFn {
 	// Fail safe; should never be true.
 	if (e.direction == elev.Up && e.floor == elev.NumFloors-1) ||
 		(e.direction == elev.Down && e.floor == 0) {
-		elev.SetMotorDirection(elev.Stop)
+		if !e.simulate {
+			elev.SetMotorDirection(elev.Stop)
+		}
 		e.direction = elev.Stop
 		return idle
 	}
 
 	// Wait untill floor is passed.
-	for elev.ReadFloorSensor() != -1 {
-		time.Sleep(100 * time.Millisecond)
+	if !e.simulate {
+		for elev.ReadFloorSensor() != -1 {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 
 	return moving
 }
 
 func doorsOpen(e *Elevator) stateFn {
+	if e.simulate {
+		if (e.floor < e.virtualreq.floor && e.direction == elev.Down) ||
+			(e.floor > e.virtualreq.floor && e.direction == elev.Up) {
+			e.cost = e.cost + 3 // fixed cost for internal commands
+		}
+
+		e.cost = e.cost + 4 // fixed cost for waiting until the doors close
+		return gotoFloor
+	}
+
 	elev.SetDoorOpenLamp(1)
 	defer elev.SetDoorOpenLamp(0)
 
+	// TODO: Close doors quicker if an internal command is received.
+
 	timeOut := time.After(3 * time.Second)
-	for {
-		select {
-		case <-timeOut:
-			return gotoFloor
-		case floor := <-e.panel.Commands:
-			e.dest[floor] = true
-			return gotoFloor
-		}
-	}
+	<-timeOut
+	return gotoFloor
 }
 
 func gotoFloor(e *Elevator) stateFn {
@@ -155,10 +230,14 @@ func gotoFloor(e *Elevator) stateFn {
 		for f := range e.dest {
 			// Are there more destinations in the direction of motion?
 			if e.dest[f] && f > e.floor && e.direction == elev.Up {
-				elev.SetMotorDirection(elev.Up)
+				if !e.simulate {
+					elev.SetMotorDirection(elev.Up)
+				}
 				return moving
 			} else if e.dest[f] && f < e.floor && e.direction == elev.Down {
-				elev.SetMotorDirection(elev.Down)
+				if !e.simulate {
+					elev.SetMotorDirection(elev.Down)
+				}
 				return moving
 			}
 		}
@@ -174,20 +253,31 @@ func gotoFloor(e *Elevator) stateFn {
 
 	// Check for request in diection of motion.
 	if e.hasWork() {
-		elev.SetMotorDirection(e.direction)
+		if !e.simulate {
+			elev.SetMotorDirection(e.direction)
+		}
 		return moving
 	}
 
 	// If we get to this point, there are no more destinations.
-	elev.SetMotorDirection(elev.Stop)
+	if !e.simulate {
+		elev.SetMotorDirection(elev.Stop)
+	}
 	e.direction = elev.Stop
 	return idle
 }
 
 func idle(e *Elevator) stateFn {
+	if e.hasDest() {
+		e.direction = elev.Up
+		return gotoFloor
+	}
+
 	for floor := 0; floor < elev.NumFloors; floor++ {
 		if e.requests[floor][indexOfDir(elev.Up)] || e.requests[floor][indexOfDir(elev.Down)] {
-			if floor == e.floor && e.requests[floor][indexOfDir(elev.Up)] {
+			if e.simulate && floor == e.floor && floor == e.virtualreq.floor {
+				return nil
+			} else if floor == e.floor && e.requests[floor][indexOfDir(elev.Up)] {
 				e.clearRequest(floor, elev.Up)
 				e.clearRequest(floor, elev.Down) // clear both directions
 				e.direction = elev.Up
@@ -207,7 +297,9 @@ func idle(e *Elevator) stateFn {
 		}
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	if !e.simulate {
+		time.Sleep(25 * time.Millisecond)
+	}
 
 	return idle
 }
@@ -237,9 +329,15 @@ func (e *Elevator) hasDest() bool {
 
 // Clear requests and resets panel lamp.
 func (e *Elevator) clearRequest(floor int, dir elev.Direction) {
-	if (floor == 0 && dir == elev.Down) || (floor == elev.NumFloors-1 && dir == elev.Up) {
-		return // invalid request
+	req := Request{floor, dir}
+	if !req.isValid() {
+		errorlog.Println("Invalid request")
+		return
 	}
+	
 	e.requests[floor][indexOfDir(dir)] = false
-	e.panel.SetLamp(btnFromDir(dir), floor, false)
+	e.requestsBuffer[floor][indexOfDir(dir)] = false
+	if !e.simulate {
+		e.panel.SetLamp(btnFromDir(dir), floor, false)
+	}
 }

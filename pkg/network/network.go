@@ -9,11 +9,19 @@ package network
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"time"
 )
+
+var infolog *log.Logger
+var errorlog *log.Logger
+
+func init() {
+	infolog = log.New(os.Stdout, "Node: ", 0)
+	errorlog = log.New(os.Stdout, "\x1b[31mERROR\x1b[m: ", 0)
+}
 
 const (
 	aliveTime          = 50 * time.Millisecond
@@ -33,6 +41,7 @@ const (
 )
 
 type MsgType uint32
+
 // Message types. User-defined message types must be >= 16.
 // 0-15 are reserved.
 const (
@@ -178,7 +187,7 @@ func (n *Node) Start() error {
 		go n.maintainNetwork()
 		n.updateState(disconnected)
 
-		log.Printf("Node is running on %v.\n", n.thisNode)
+		infolog.Printf("running on %v.\n", n.thisNode)
 	}
 	return nil
 }
@@ -315,6 +324,7 @@ func (n *Node) restoreNetwork() error {
 		// by leftNode. Thus since leftIsAlive is false there is
 		// no way of recovering and we have no choice but to
 		// disconnect.
+		n.deadNodes <- n.leftNode
 		n.updateState(disconnected)
 		return errors.New("Not able to restore connectivity.")
 	} else if !n.leftIsAlive && n.left2ndIsAlive {
@@ -335,6 +345,8 @@ func (n *Node) restoreNetwork() error {
 		n.updateState(detached2ndLeft)
 		n.sendData(n.leftNode, GET, nil)
 
+		n.deadNodes <- deadNode
+
 		// Create and send a kick message.
 		var buf [32]byte
 		packData(buf[:], &kickData{
@@ -347,7 +359,7 @@ func (n *Node) restoreNetwork() error {
 		return nil
 	} else {
 		// This should never happen.
-		log.Fatalf("Kick timer expired and was not handeled.")
+		infolog.Printf("kick timer expired and was not handeled")
 	}
 	return errors.New("Not able to restore connectivity.")
 }
@@ -468,8 +480,8 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 				// all good
 				if ok := n.kickTimer.Stop(); !ok {
 					// This should never happen.
-					log.Fatalf("Kick timer has been stopped" +
-						" after it expired.\n")
+					infolog.Printf("kick timer has been stopped" +
+						" after it expired\n")
 				}
 				n.aliveTimer.Reset(aliveTime)
 			}
@@ -481,11 +493,11 @@ func (n *Node) processUDPMessage(umsg *UDPMessage) {
 			copy(kick.deadNode[:], msg.Data[:])
 			copy(kick.senderNode[:], msg.Data[16:])
 
-			select {
-			case n.deadNodes <- kick.deadNode:
-			default:
-			}
-			
+			// select {
+			// case n.deadNodes <- kick.deadNode:
+			// default:
+			// }
+
 			if re, ok := n.resenders[msg.ID]; ok {
 				n.removeResender(re)
 			} else {
@@ -588,12 +600,12 @@ func (n *Node) sendData(to Addr, mtype MsgType, data interface{}) {
 	binary.BigEndian.PutUint32(umsg.buf[:], rand.Uint32())
 	binary.BigEndian.PutUint32(umsg.buf[4:], uint32(mtype))
 	umsg.payload = umsg.buf[:12]
-	
+
 	if data != nil {
 		np := packData(umsg.buf[12:], data)
 		umsg.payload = umsg.buf[:12+np]
 	}
-	
+
 	n.udp.Send(umsg)
 }
 
@@ -614,11 +626,10 @@ func (n *Node) updateState(s nodeState) {
 	case connected:
 		// sanity check
 		if n.leftNode.IsZero() || n.rightNode.IsZero() || n.left2ndNode.IsZero() {
-			log.Fatalf("Invalid node state.\n")
+			infolog.Fatalf("Invalid node state.\n")
 		}
 
-		log.Printf("Node connected as:")
-		fmt.Printf("                    %v -> \x1b[35m%v\x1b[m -> %v -> %v\n",
+		infolog.Printf("connected as %v -> \x1b[35m%v\x1b[m -> %v -> %v\n",
 			n.rightNode, n.thisNode, n.leftNode, n.left2ndNode)
 
 		n.state = connected
@@ -633,7 +644,7 @@ func (n *Node) updateState(s nodeState) {
 		n.rightNode.SetZero()
 		n.left2ndNode.SetZero()
 
-		log.Printf("Node is disconnected.\n")
+		infolog.Printf("disconnected\n")
 
 		n.state = disconnected
 		n.broadcastTimer.Reset(broadcastTime)

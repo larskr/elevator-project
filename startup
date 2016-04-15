@@ -3,12 +3,13 @@
 subnet="129.241.187";
 remote_dir="/var/tmp/group79";
 repo="https://github.com/larskr/elevator-project.git";
-branch="master";
+branch="watchdog-test";
 
 if [ $# -eq 0 ]; then
-    echo "Usage: ./setup [-d] <list of last byte of the IPs>";
-    exit;
+	./bin/elevator
+	exit;
 fi
+
 
 dflag='';
 while getopts 'd' flag; do
@@ -51,20 +52,22 @@ for ip in $@; do
 			"git clone ${repo};"\
 			"cd elevator-project;"\
 			"git checkout ${branch};"\
-			"go build -o elevator;"\
+			"go run make.go;"\
 			"clear;"\
-			"./elevator;"
+			"./bin/elevator;"
 	else
 	    gnome-terminal -t "${subnet}.${ip}" -x ssh -t "${subnet}.${ip}" \
 			"export GOPATH=${remote_dir};"\
 			"cd ${remote_dir}/src/elevator-project;"\
 			"git fetch origin ${branch};"\
 			"git reset --hard origin/${branch};"\
-			"go build -o elevator;"\
+			"go run make.go;"\
 			"clear;"\
-			"./elevator;"
+			"./bin/elevator;"
 	fi
     else
 	echo "${subnet}.${ip} not responding";
     fi
 done
+
+./bin/elevator

@@ -8,13 +8,12 @@ import (
 
 const pollInterval = 25 * time.Millisecond
 
-
 // Panel holds the state of the elevator panel.
 type Panel struct {
 	Requests chan Request
-	Commands chan int     
+	Commands chan int
 
-	lamps  [elev.NumFloors][3]bool
+	lamps [elev.NumFloors][3]bool
 }
 
 func NewPanel() *Panel {
@@ -26,6 +25,16 @@ func NewPanel() *Panel {
 
 func (p *Panel) Start() {
 	go p.poll()
+}
+
+// Initializes panel from backup. LoadBackup may be called with a
+// empty backupData struct.
+func (p *Panel) LoadBackup(bd *backupData) {
+	for floor := 0; floor < elev.NumFloors; floor++ {
+		//p.SetLamp(elev.CallDown, floor, bd.requests[floor][0])
+		//p.SetLamp(elev.CallUp, floor, bd.requests[floor][1])
+		p.SetLamp(elev.Command, floor, bd.dest[floor])
+	}
 }
 
 func (p *Panel) SetLamp(b elev.Button, floor int, on bool) {
@@ -47,8 +56,8 @@ func (p *Panel) poll() {
 			if v != 0 && prev[floor][elev.CallUp] == 0 {
 				if !p.lamps[floor][elev.CallUp] {
 					p.Requests <- Request{
-						Floor:     floor,
-						Direction: elev.Up,
+						floor:     floor,
+						direction: elev.Up,
 					}
 					elev.SetButtonLamp(elev.CallUp, floor, 1)
 					p.lamps[floor][elev.CallUp] = true
@@ -60,8 +69,8 @@ func (p *Panel) poll() {
 			if v != 0 && v != prev[floor][elev.CallDown] {
 				if !p.lamps[floor][elev.CallDown] {
 					p.Requests <- Request{
-						Floor:     floor,
-						Direction: elev.Down,
+						floor:     floor,
+						direction: elev.Down,
 					}
 					elev.SetButtonLamp(elev.CallDown, floor, 1)
 					p.lamps[floor][elev.CallDown] = true

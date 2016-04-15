@@ -7,8 +7,16 @@ import (
 const maxRequests = 2 * elev.NumFloors
 
 type Request struct {
-	Floor     int
-	Direction elev.Direction
+	floor     int
+	direction elev.Direction
+}
+
+func (req Request) isValid() bool {
+	if (req.floor == 0 && req.direction == elev.Down) ||
+		(req.floor == elev.NumFloors-1 && req.direction == elev.Up) {
+		return false
+	}
+	return true
 }
 
 // btnFromDir converts a elev.Direction to the corresponding elev.Button.

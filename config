@@ -11,3 +11,4 @@ protocol = udp4
 [watchdog]
 socket = /var/tmp/watchdog
 elev_socket = /var/tmp/elevator
+backupfile = /var/tmp/elevatorbackup
