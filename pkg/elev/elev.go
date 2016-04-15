@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"strconv"
 )
 
 // Hardware constants
@@ -58,8 +59,13 @@ type Config struct {
 
 var config Config
 
-func LoadConfig(conf *Config) {
-	config = *conf
+func LoadConfig(conf map[string]string) {
+	config.MotorSpeed, _ = strconv.Atoi(conf["elevator.motor_speed"])
+	config.SimulatorPort, _ = strconv.Atoi(conf["elevator.simulator_port"])
+	config.SimulatorIP = conf["elevator.simulator_ip"]
+	if conf["elevator.use_simulator"] == "true" {
+		config.UseSimulator = true
+	}
 }
 
 func Init() error {
