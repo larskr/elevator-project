@@ -1,26 +1,23 @@
-
 package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"time"
-	"net"
-	"syscall"
-	"os/exec"
 	//"os/signal"
 
-	"elevator-project/elev"
-	"elevator-project/network"
+	"elevator-project/pkg/config"
+	"elevator-project/pkg/elev"
+	"elevator-project/pkg/network"
 )
 
 type ServiceMode int
 
 const (
-	Online        ServiceMode = 0x1
-	Local         ServiceMode = 0x2
-	Broken        ServiceMode = 0x3
-	Watchdog      ServiceMode = 0x4
+	Online ServiceMode = 0x1
+	Local  ServiceMode = 0x2
+	Broken ServiceMode = 0x3
 )
 
 type BackupHandler struct {
@@ -40,6 +37,10 @@ func (b *BackupHandler) create(e *Elevator) *backupData {
 	return bd
 }
 
+func (b *BackupHandler) get() *backupData {
+	return b.backups[b.addr]
+}
+
 func (b *BackupHandler) update(bd *backupData) {
 	b.backups[bd.elevator] = bd
 }
@@ -49,69 +50,62 @@ func (b *BackupHandler) changed(e *Elevator) bool {
 	return !(e.requests == backup.requests && e.dest == backup.dest)
 }
 
+type WatchdogHandler struct {
+	conn     *net.UnixConn
+	watchdog *net.UnixAddr
+	addr     *net.UnixAddr
+	timer    Timer
+}
+
+const watchdogResendInterval = 100 * time.Millisecond
+
+func (wd *WatchdogHandler) start() ([]byte, error) {
+	// unlink socket
+	os.Remove(wd.addr.Name)
+
+	var err error
+	wd.conn, err = net.ListenUnixgram("unixgram", wd.addr)
+	if err != nil {
+		return nil, err
+	}
+
+	// Let the watchdog process know that the elevator is ready to receive.
+	_, err = wd.conn.WriteToUnix([]byte("ready"), wd.watchdog)
+	if err != nil {
+		return nil, err
+	}
+
+	buf := make([]byte, 256)
+	n, _, err := wd.conn.ReadFromUnix(buf)
+	if err != nil {
+		return nil, err
+	}
+
+	return buf[:n], nil
+}
+
+func (wd *WatchdogHandler) writeBackup(bd *backupData) error {
+	data, _ := bd.MarshalBinary()
+
+	_, err := wd.conn.WriteToUnix(data, wd.watchdog)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func main() {
-	conf, err := loadConfig("./config")
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-	elev.LoadConfig(&conf.elevator)
-	network.LoadConfig(&conf.network)
+	conf, _ := config.LoadFile("./config")
+	elev.LoadConfig(conf)
+	network.LoadConfig(conf)
 
-	var mode ServiceMode = Watchdog
-
-	wdaddr, err := net.ResolveUnixAddr("unixgram", conf.watchdogSocket)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+	watchdog := &WatchdogHandler{
+		watchdog: &net.UnixAddr{conf["watchdog.socket"], "unixgram"},
+		addr:     &net.UnixAddr{conf["watchdog.elev_socket"], "unixgram"},
 	}
+	watchdog.start()
 
-	os.Remove(conf.watchdogSocket)
-	wdconn, err := net.ListenUnixgram("unixgram", wdaddr)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
-	for mode == Watchdog {
-		wdconn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		rbuf := make([]byte, 256)
-		_, _, err = wdconn.ReadFromUnix(rbuf)
-		if err != nil {
-			wdconn.Close()
-			//fmt.Println("Watchdog timed out.")
-			mode = Local
-		}
-	}
-
-	elevaddr, err := net.ResolveUnixAddr("unixgram", conf.elevatorSocket)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-	
-	os.Remove(conf.elevatorSocket)
-	elevconn, err := net.ListenUnixgram("unixgram", elevaddr)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
-	cmd := exec.Command(os.Args[0])
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Start()
-
-	fmt.Printf("Elevator PID: %v\n", cmd.Process.Pid)
-	
-	for {
-		elevconn.WriteToUnix([]byte("Alive"), wdaddr)
-		fmt.Println("Sent alive to watchdog.")
-		time.Sleep(1 * time.Second)
-	}
-	
-	os.Exit(1)
-	
-	err = elev.Init()
+	err := elev.Init()
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -134,10 +128,17 @@ func main() {
 	var backup = &BackupHandler{make(map[network.Addr]*backupData), node.Addr(), false}
 	backup.create(elevator)
 
-	mode = Local
+	var mode ServiceMode = Local
 	reqch := panel.Requests
 
 	for {
+		// TODO: check node.IsConnected()
+		
+		if watchdog.timer.HasTimedOut() {
+			watchdog.writeBackup(backup.get())
+			watchdog.timer.Reset(watchdogResendInterval)
+		}
+		
 		if mode == Online {
 
 			if backup.synced && backup.changed(elevator) {
@@ -244,8 +245,6 @@ func main() {
 			}
 
 		} else if mode == Broken {
-		} else if mode == Watchdog {
-			
 		}
 
 	}

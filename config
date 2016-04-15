@@ -9,5 +9,5 @@ interface = eth0
 protocol = udp4
 
 [watchdog]
-elevator_socket = /var/tmp/elevator_socket
-watchdog_socket = /var/tmp/watchdog_socket
+socket = /var/tmp/watchdog
+elev_socket = /var/tmp/elevator

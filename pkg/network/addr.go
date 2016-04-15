@@ -12,8 +12,9 @@ type Config struct {
 
 var config Config
 
-func LoadConfig(conf *Config) {
-	config = *conf
+func LoadConfig(conf map[string]string) {
+	config.Interface = conf["network.interface"]
+	config.Protocol = conf["network.protocol"]
 }
 
 // The Addr type is used to identify nodes and can be easliy converted

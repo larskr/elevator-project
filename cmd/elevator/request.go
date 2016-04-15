@@ -1,7 +1,7 @@
 package main
 
 import (
-	"elevator-project/elev"
+	"elevator-project/pkg/elev"
 )
 
 const maxRequests = 2 * elev.NumFloors

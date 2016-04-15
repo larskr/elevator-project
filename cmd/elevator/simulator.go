@@ -1,7 +1,7 @@
 package main
 
 import (
-	"elevator-project/elev"
+	"elevator-project/pkg/elev"
 )
 
 type simStateFn func(*Simulator) simStateFn

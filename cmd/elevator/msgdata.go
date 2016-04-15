@@ -6,8 +6,8 @@ import (
 	"math"
 	"time"
 
-	"elevator-project/elev"
-	"elevator-project/network"
+	"elevator-project/pkg/elev"
+	"elevator-project/pkg/network"
 )
 
 func packData(p []byte, data encoding.BinaryMarshaler) int {

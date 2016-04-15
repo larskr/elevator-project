@@ -3,7 +3,7 @@ package main
 import (
 	"time"
 
-	"elevator-project/elev"
+	"elevator-project/pkg/elev"
 )
 
 const pollInterval = 25 * time.Millisecond

@@ -3,7 +3,7 @@ package main
 import (
 	"time"
 
-	"elevator-project/elev"
+	"elevator-project/pkg/elev"
 )
 
 // stateFn represents the state of the elevator as a function that
