@@ -6,7 +6,7 @@ repo="https://github.com/larskr/elevator-project.git";
 branch="watchdog-test";
 
 if [ $# -eq 0 ]; then
-	./bin/elevator
+	./bin/elevator --nowatchdog
 	exit;
 fi
 
@@ -70,4 +70,6 @@ for ip in $@; do
     fi
 done
 
-./bin/elevator
+if [[ "${dflag}" = "" ]]; then
+	./bin/elevator --nowatchdog
+fi

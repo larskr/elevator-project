@@ -239,6 +239,8 @@ func gotoFloor(e *Elevator) stateFn {
 					elev.SetMotorDirection(elev.Down)
 				}
 				return moving
+			} else if e.dest[f] && f == e.floor {
+				return atFloor
 			}
 		}
 		// No destinations in the direction of motion. Flip directions
@@ -331,10 +333,9 @@ func (e *Elevator) hasDest() bool {
 func (e *Elevator) clearRequest(floor int, dir elev.Direction) {
 	req := Request{floor, dir}
 	if !req.isValid() {
-		errorlog.Println("Invalid request")
 		return
 	}
-	
+
 	e.requests[floor][indexOfDir(dir)] = false
 	e.requestsBuffer[floor][indexOfDir(dir)] = false
 	if !e.simulate {
