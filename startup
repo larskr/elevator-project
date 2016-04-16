@@ -3,7 +3,7 @@
 subnet="129.241.187";
 remote_dir="/var/tmp/group79";
 repo="https://github.com/larskr/elevator-project.git";
-branch="watchdog-test";
+branch="master";
 
 if [ $# -eq 0 ]; then
 	./bin/watchdog
