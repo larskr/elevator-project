@@ -229,6 +229,11 @@ func main() {
 			if !backup.synced {
 				restoreBackup(unassigned, backup.get())
 				backup.synced = true
+			} else {
+				// Here we can delete local external orders because we
+				// have a backup synchronized. However, if this elevator is
+				// disconnected and the rest of the network magically crashes
+				// simultaneously, then the external order will be lost.
 			}
 
 			// Only local request on panel.
