@@ -55,24 +55,28 @@ func main() {
 	go wd.Run()
 
 	interrupted := make(chan os.Signal, 1)
-	quit := make(chan os.Signal, 1)
 	signal.Notify(interrupted, syscall.SIGINT)
-	signal.Notify(quit, syscall.SIGQUIT)
 
 	for {
 		select {
 		case <-interrupted:
-			if wd.cmd.Process != nil {
-				wd.cmd.Process.Signal(syscall.SIGINT)
-				wd.cmd.Wait()
-				infolog.Printf("sent SIGINT to elevator process pid %v\n",
-					wd.cmd.Process.Pid)
-			}
-		case <-quit:
-			infolog.Printf("shutting down.\n")
+			// if wd.cmd.Process != nil {
+			// 	wd.cmd.Process.Signal(syscall.SIGINT)
+			// 	wd.cmd.Wait()
+			// 	infolog.Printf("sent SIGINT to elevator process pid %v\n",
+			// 		wd.cmd.Process.Pid)
+			// }
+
 			waitc := make(chan struct{})
 			wd.shutdown <- waitc
 			<-waitc
+
+			if wd.cmd.Process != nil {
+				wd.cmd.Process.Signal(syscall.SIGINT)
+				wd.cmd.Wait()
+			}
+			wd.conn.Close()
+
 			os.Exit(0)
 		}
 	}
@@ -159,11 +163,6 @@ func (wd *Watchdog) Run() error {
 	for {
 		select {
 		case c := <-wd.shutdown:
-			if wd.cmd.Process != nil {
-				wd.cmd.Process.Signal(syscall.SIGINT)
-				wd.cmd.Wait()
-			}
-			wd.conn.Close()
 			c <- struct{}{}
 			return nil
 		default:

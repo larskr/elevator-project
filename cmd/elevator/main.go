@@ -15,8 +15,8 @@ import (
 )
 
 var (
-        noWatchdog = flag.Bool("nowatchdog", false,
-                "Set this to run without a watchdog process.")
+	noWatchdog = flag.Bool("nowatchdog", false,
+		"Set this to run without a watchdog process.")
 )
 
 // Logging
@@ -27,7 +27,6 @@ func init() {
 	debug = log.New(os.Stdout, "", 0)
 	errorlog = log.New(os.Stderr, "\x1b[31mERROR\x1b[m: ", 0)
 }
-
 
 type ServiceMode int
 
@@ -43,8 +42,8 @@ type BackupHandler struct {
 
 	// True when the latest backup has been synchronized with the other elevators.
 	// When service mode is online and synced is false, the synchronization is not
-	// complete. 
-	synced  bool
+	// complete.
+	synced bool
 
 	// An empty struct is sent on this channel when the latest backup
 	// and the current elevator state is different and synced is true.
@@ -101,7 +100,7 @@ func (wd *WatchdogHandler) start() (*backupData, error) {
 	if *noWatchdog {
 		return &backupData{}, nil
 	}
-	
+
 	// unlink socket
 	os.Remove(wd.addr.Name)
 
@@ -125,7 +124,7 @@ func (wd *WatchdogHandler) start() (*backupData, error) {
 
 	bd := &backupData{}
 	unpackData(buf[:n], bd)
-	
+
 	return bd, nil
 }
 
@@ -227,9 +226,18 @@ func main() {
 		} else {
 			mode = Local
 
+			if !backup.synced {
+				restoreBackup(unassigned, backup.get())
+				backup.synced = true
+			}
+
+			// Only local request on panel.
+			lightPanel(panel, backup.get(), nil)
+
 			// Check if the elevator was disconnected in the middle of a transaction.
 			if reqch == nil {
 				unassigned <- req
+				reqch = unassigned
 			}
 		}
 
@@ -277,7 +285,7 @@ func main() {
 					errorlog.Println(err)
 					break
 				}
-				
+
 				debug.Printf("Received cost message: \n\t%v\n", cd)
 
 				// Update cost message if our cost is lower.
@@ -297,7 +305,7 @@ func main() {
 					errorlog.Println(err)
 					break
 				}
-				
+
 				debug.Printf("Received assign message: \n\t%v\n", ad)
 
 				// Add request to elevator if the request was assign to this elevator.
@@ -306,9 +314,9 @@ func main() {
 					panel.SetLamp(btnFromDir(ad.req.direction), ad.req.floor, true)
 					ad.taken = true
 				}
-				
+
 				debug.Printf("Forwarded assign message: \n\t%v\n", ad)
-				
+
 				packData(msg.Data, &ad)
 
 			case BACKUP:
@@ -354,7 +362,7 @@ func main() {
 					errorlog.Println(err)
 					break
 				}
-				
+
 				debug.Printf("Assign message returned: \n\t%v\n", ad)
 				if !ad.taken {
 					elevator.AddRequest(ad.req)
@@ -384,14 +392,7 @@ func main() {
 			if deadbackup, found := backup.backups[dead]; found {
 				debug.Printf("Found backup of %v\n", dead)
 
-				// Restore requests
-				for floor := 0; floor < elev.NumFloors; floor++ {
-					for _, dir := range []elev.Direction{elev.Down, elev.Up} {
-						if deadbackup.requests[floor][indexOfDir(dir)] {
-							unassigned <- Request{floor, dir}
-						}
-					}
-				}
+				restoreBackup(unassigned, deadbackup)
 			}
 		default:
 		}
@@ -401,13 +402,24 @@ func main() {
 	os.Exit(0)
 }
 
+// Extracts request from backup into channel.
+func restoreBackup(c chan Request, bd *backupData) {
+	for floor := 0; floor < elev.NumFloors; floor++ {
+		for _, dir := range []elev.Direction{elev.Down, elev.Up} {
+			if bd.requests[floor][indexOfDir(dir)] {
+				c <- Request{floor, dir}
+			}
+		}
+	}
+}
+
 // Update panel by comparing old and new backups.
 func lightPanel(panel *Panel, new, old *backupData) {
 	var empty backupData
 	if old == nil {
 		old = &empty
 	}
-	
+
 	for floor := 0; floor < elev.NumFloors; floor++ {
 		for _, dir := range []elev.Direction{elev.Down, elev.Up} {
 			if !old.requests[floor][indexOfDir(dir)] && new.requests[floor][indexOfDir(dir)] {

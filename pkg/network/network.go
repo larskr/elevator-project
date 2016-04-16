@@ -324,6 +324,10 @@ func (n *Node) restoreNetwork() error {
 		// by leftNode. Thus since leftIsAlive is false there is
 		// no way of recovering and we have no choice but to
 		// disconnect.
+		if n.left2ndNode != n.thisNode {
+			// true if there is more than two nodes in network
+			n.deadNodes <- n.left2ndNode
+		}
 		n.deadNodes <- n.leftNode
 		n.updateState(disconnected)
 		return errors.New("Not able to restore connectivity.")

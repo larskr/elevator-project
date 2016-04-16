@@ -6,7 +6,8 @@ repo="https://github.com/larskr/elevator-project.git";
 branch="watchdog-test";
 
 if [ $# -eq 0 ]; then
-	./bin/elevator --nowatchdog
+	./bin/watchdog
+	#./bin/elevator --nowatchdog
 	exit;
 fi
 
@@ -54,7 +55,8 @@ for ip in $@; do
 			"git checkout ${branch};"\
 			"go run make.go;"\
 			"clear;"\
-			"./bin/elevator;"
+			"./bin/watchdog"
+			#"./bin/elevator --nowatchdog;"
 	else
 	    gnome-terminal -t "${subnet}.${ip}" -x ssh -t "${subnet}.${ip}" \
 			"export GOPATH=${remote_dir};"\
@@ -63,7 +65,8 @@ for ip in $@; do
 			"git reset --hard origin/${branch};"\
 			"go run make.go;"\
 			"clear;"\
-			"./bin/elevator;"
+			"./bin/watchdog"
+			#"./bin/elevator --nowatchdog;"
 	fi
     else
 	echo "${subnet}.${ip} not responding";
@@ -71,5 +74,6 @@ for ip in $@; do
 done
 
 if [[ "${dflag}" = "" ]]; then
-	./bin/elevator --nowatchdog
+	./bin/watchdog
+	#./bin/elevator --nowatchdog
 fi
