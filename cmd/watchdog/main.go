@@ -109,6 +109,10 @@ func (wd *Watchdog) Restart() {
 
 	infolog.Printf("elevator process pid is %v\n", wd.cmd.Process.Pid)
 
+	// BUG(larskr): If there is a message in the watchdog socket waiting in the
+	// watchdog socket from the previous elevator process, it will read the ready
+	// message immediately and try to write to the elevator socket before it exists.
+	
 	// Wait for ready message.
 	var buf [16]byte
 	wd.conn.SetReadDeadline(time.Time{})

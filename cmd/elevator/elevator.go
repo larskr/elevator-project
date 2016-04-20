@@ -18,6 +18,8 @@ type Elevator struct {
 	floor     int
 	direction elev.Direction
 
+	stopped bool
+
 	panel *Panel
 
 	dest       [elev.NumFloors]bool
@@ -71,6 +73,10 @@ func (e *Elevator) Start() {
 	go e.readPanel()
 }
 
+func (e *Elevator) IsRunning() bool {
+	return !e.stopped
+}
+
 func (e *Elevator) AddRequest(req Request) {
 	if req.isValid() {
 		e.requestsBuffer[req.floor][indexOfDir(req.direction)] = true
@@ -119,9 +125,18 @@ func moving(e *Elevator) stateFn {
 		return atFloor
 	}
 
+	timeout := time.After(2 * time.Second)
+	
 	for elev.ReadFloorSensor() == -1 {
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-timeout:
+			e.stopped = true
+		default:
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
+	e.stopped = false
+	
 	e.floor = elev.ReadFloorSensor()
 	return atFloor
 }
@@ -194,9 +209,17 @@ func atFloor(e *Elevator) stateFn {
 
 	// Wait untill floor is passed.
 	if !e.simulate {
-		for elev.ReadFloorSensor() != -1 {
-			time.Sleep(100 * time.Millisecond)
+		timeout := time.After(1 * time.Second)
+		
+		for elev.ReadFloorSensor() == -1 {
+			select {
+			case <-timeout:
+				e.stopped = true
+			default:
+				time.Sleep(100 * time.Millisecond)
+			}
 		}
+		e.stopped = false
 	}
 
 	return moving
@@ -215,8 +238,6 @@ func doorsOpen(e *Elevator) stateFn {
 
 	elev.SetDoorOpenLamp(1)
 	defer elev.SetDoorOpenLamp(0)
-
-	// TODO: Close doors quicker if an internal command is received.
 
 	timeOut := time.After(3 * time.Second)
 	<-timeOut

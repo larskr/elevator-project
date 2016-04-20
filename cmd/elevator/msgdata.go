@@ -35,6 +35,7 @@ const (
 	COST   network.MsgType = 0x10
 	ASSIGN network.MsgType = 0x11
 	BACKUP network.MsgType = 0x12
+	SYNC   network.MsgType = 0x13
 )
 
 type costData struct {
@@ -57,6 +58,10 @@ type backupData struct {
 	direction elev.Direction
 	requests  [elev.NumFloors][2]bool
 	dest      [elev.NumFloors]bool
+}
+
+type syncData struct {
+	latest backupData
 }
 
 func (d costData) String() string {
@@ -188,4 +193,12 @@ func (d *backupData) UnmarshalBinary(p []byte) error {
 	}
 
 	return nil
+}
+
+func (d *syncData) MarshalBinary() ([]byte, error) {
+	return d.latest.MarshalBinary()
+}
+
+func (d *syncData) UnmarshalBinary(p []byte) error {
+	return d.latest.UnmarshalBinary(p)
 }

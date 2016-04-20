@@ -221,7 +221,11 @@ func main() {
 
 	for {
 
-		if node.IsConnected() {
+		if node.IsConnected() && elevator.IsRunning() {
+			if mode == Local {
+				sendData(node, SYNC, &syncData{})
+			}
+			
 			mode = Online
 		} else {
 			mode = Local
@@ -336,6 +340,13 @@ func main() {
 				old := backup.backups[bd.elevator]
 				lightPanel(panel, &bd, old)
 				backup.update(&bd)
+
+			case SYNC:
+				var sd syncData
+				unpackData(msg.Data, &sd)
+				syncBackup(&sd, backup.get())
+				packData(msg.Data, &sd)
+				
 			}
 			node.ForwardMessage(msg)
 
@@ -384,6 +395,11 @@ func main() {
 				// Backup synchronized.
 				backup.synced = true
 
+			case SYNC:
+				var sd syncData
+				unpackData(msg.Data, &sd)
+				lightBackup(panel, sd.latest, nil)
+				
 			}
 
 		case <-interrupt:
@@ -413,6 +429,17 @@ func restoreBackup(c chan Request, bd *backupData) {
 		for _, dir := range []elev.Direction{elev.Down, elev.Up} {
 			if bd.requests[floor][indexOfDir(dir)] {
 				c <- Request{floor, dir}
+			}
+		}
+	}
+}
+
+// ORs the backup into syncData.
+func syncBackup(sd *syncData, bd *backupData) {
+	for floor := 0; floor < elev.NumFloors; floor++ {
+		for _, dir := range []elev.Direction{elev.Down, elev.Up} {
+			if bd.requests[floor][indexOfDir(dir)] {
+				sd.latest.requests[floor][indexOfDir(dir)] = true
 			}
 		}
 	}
