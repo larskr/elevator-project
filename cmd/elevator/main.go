@@ -19,7 +19,6 @@ var (
 		"Set this to run without a watchdog process.")
 )
 
-// Logging
 var debug *log.Logger
 var errorlog *log.Logger
 
@@ -31,8 +30,9 @@ func init() {
 type ServiceMode int
 
 const (
-	Online ServiceMode = 0x1
-	Local  ServiceMode = 0x2
+	Online  ServiceMode = 0x1
+	Local   ServiceMode = 0x2
+	Stopped ServiceMode = 0x3
 )
 
 // Stores backups for all connected elevators.
@@ -40,14 +40,8 @@ type BackupHandler struct {
 	backups map[network.Addr]*backupData
 	addr    network.Addr
 
-	// True when the latest backup has been synchronized with the other elevators.
-	// When service mode is online and synced is false, the synchronization is not
-	// complete.
-	synced bool
-
 	// An empty struct is sent on this channel when the latest backup
-	// and the current elevator state is different and synced is true.
-	// This means that reading from this channel blocks while synchronizing.
+	// and the current elevator state is different.
 	invalid chan struct{}
 }
 
@@ -79,7 +73,7 @@ func (b *BackupHandler) update(bd *backupData) {
 func (b *BackupHandler) changed(e *Elevator) bool {
 	for {
 		backup := b.backups[b.addr]
-		if !(e.requestsBuffer == backup.requests && e.destBuffer == backup.dest) && b.synced {
+		if !(e.requestsBuffer == backup.requests && e.destBuffer == backup.dest) {
 			b.invalid <- struct{}{}
 		}
 	}
@@ -167,7 +161,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create objects.
 	node := network.NewNode()
 	panel := NewPanel()
 	elevator := NewElevator(panel)
@@ -178,9 +171,9 @@ func main() {
 	panel.LoadBackup(wdbackup)
 
 	// Setup channels.
-	msgsFromOther := make(chan *network.Message)
-	msgsFromThis := make(chan *network.Message)
-	deadNode := make(chan network.Addr)
+	msgsFromOther := make(<-chan *network.Message)
+	msgsFromThis := make(<-chan *network.Message)
+	deadNode := make(<-chan network.Addr)
 
 	// Setup signal handler
 	interrupt := make(chan os.Signal, 1)
@@ -200,7 +193,6 @@ func main() {
 	var backup = &BackupHandler{
 		backups: make(map[network.Addr]*backupData),
 		addr:    node.Addr(),
-		synced:  true,
 		invalid: make(chan struct{}),
 	}
 	backup.create(elevator)
@@ -220,36 +212,50 @@ func main() {
 	var req Request
 
 	for {
-
+		/*
+		 * Update elevator service mode.
+		 */
 		if node.IsConnected() && elevator.IsRunning() {
-			if mode == Local {
+			switch mode {
+			case Local:
 				sendData(node, SYNC, &syncData{})
+			case Stopped:
+			case Online:
 			}
-			
+
 			mode = Online
-		} else {
-			mode = Local
-
-			if !backup.synced {
+		} else if node.IsConnected() && !elevator.IsRunning() {
+			switch mode {
+			case Online:
 				restoreBackup(unassigned, backup.get())
-				backup.synced = true
-			} else {
-				// Here we can delete local external orders because we
-				// have a backup synchronized. However, if this elevator is
-				// disconnected and the rest of the network magically crashes
-				// simultaneously, then the external order will be lost.
+			case Local:
+				sendData(node, SYNC, &syncData{})
+			case Stopped:
 			}
 
-			// Only local request on panel.
-			lightPanel(panel, backup.get(), nil)
+			mode = Stopped
+		} else {
+			switch mode {
+			case Stopped: fallthrough
+			case Online:
+				// Only local requests on panel.
+				lightPanel(panel, backup.get(), nil)
 
-			// Check if the elevator was disconnected in the middle of a transaction.
-			if reqch == nil {
-				unassigned <- req
-				reqch = unassigned
+				// Check if the elevator was disconnected in the middle of a transaction.
+				if reqch == nil {
+					unassigned <- req
+					reqch = unassigned
+				}
+				
+			case Local:
 			}
+
+			mode = Local
 		}
 
+		/*
+		 * Process messages and handle backups.
+		 */
 		select {
 
 		case <-watchdog.timer.C:
@@ -260,10 +266,7 @@ func main() {
 			bd := backup.create(elevator)
 			watchdog.writeBackup(bd)
 
-			debug.Printf("Backup message: \n\t%v\n", bd)
-
-			if mode == Online && backup.synced {
-				backup.synced = false
+			if mode != Local {
 				sendData(node, BACKUP, bd)
 				debug.Printf("Sent backup message: \n\t%v\n", bd)
 			}
@@ -282,11 +285,27 @@ func main() {
 				debug.Printf("Sent cost message: \n\t%v\n", cd)
 
 				reqch = nil // handle only Request at a time.
+			} else if mode == Stopped {
+				var cd = costData{
+					elevator: node.Addr(),
+					req:      req,
+					cost:     9000.0,
+				}
+				sendData(node, COST, &cd)
+				debug.Printf("Sent cost message: \n\t%v\n", cd)
+
+				reqch = nil // handle only Request at a time.
 			} else if mode == Local {
 				elevator.AddRequest(req)
 			}
 
 		case msg := <-msgsFromOther:
+			if mode == Stopped {
+				node.ForwardMessage(msg)
+			} else if mode == Local {
+				break
+			}
+
 			switch msg.Type {
 			case COST:
 				var cd costData
@@ -346,11 +365,15 @@ func main() {
 				unpackData(msg.Data, &sd)
 				syncBackup(&sd, backup.get())
 				packData(msg.Data, &sd)
-				
+
 			}
 			node.ForwardMessage(msg)
 
 		case msg := <-msgsFromThis:
+			if mode == Local {
+				break
+			}
+
 			switch msg.Type {
 			case COST:
 				var cd costData
@@ -381,25 +404,21 @@ func main() {
 
 				debug.Printf("Assign message returned: \n\t%v\n", ad)
 				if !ad.taken {
-					elevator.AddRequest(ad.req)
+					if mode != Stopped {
+						elevator.AddRequest(ad.req)
+					} else {
+						unassigned <- req
+					}
 				}
 
 				// Transaction complete. Ready to process next request.
 				reqch = unassigned
 
-			case BACKUP:
-				var bd backupData
-				unpackData(msg.Data, &bd)
-				debug.Printf("Backup message returned: \n\t%v\n", bd)
-
-				// Backup synchronized.
-				backup.synced = true
-
 			case SYNC:
 				var sd syncData
 				unpackData(msg.Data, &sd)
 				lightBackup(panel, sd.latest, nil)
-				
+
 			}
 
 		case <-interrupt:
